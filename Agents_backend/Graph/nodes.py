@@ -1,7 +1,7 @@
 import os
 from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_core.exceptions import LangChainException
 from Graph.state import AgentState
 
@@ -11,18 +11,20 @@ if not tavily_api_key:
     raise ValueError("TAVILY_API_KEY not found in environment variables")
 
 tavily_tool = TavilySearchResults(max_results=3, tavily_api_key=tavily_api_key)
-llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm_creative = ChatOpenAI(model="gpt-4o", temperature=0.7)
 
 # --- NODE 1: RESEARCHER ---
 def researcher_node(state: AgentState) -> dict:
     """
     Research node that searches for information and structures findings.
+    Tracks all sources for transparency and verification.
     
     Args:
         state: Current agent state containing topic
         
     Returns:
-        Updated state with research_data or error message
+        Updated state with research_data, sources list, or error message
     """
     try:
         topic = state['topic']
@@ -39,11 +41,19 @@ def researcher_node(state: AgentState) -> dict:
         if not search_results:
             return {"error": "No search results found for the topic"}
         
-        # 2. Format search results
-        search_content = "\n".join([
-            f"Source: {result['url']}\nContent: {result['content']}"
-            for result in search_results
-        ])
+        # 2. Track sources for transparency
+        sources = []
+        search_content = ""
+        
+        for result in search_results:
+            sources.append({
+                'url': result.get('url'),
+                'title': result.get('title'),
+                'source': result.get('source')
+            })
+            search_content += f"Source: {result['url']}\nTitle: {result.get('title', 'N/A')}\nContent: {result['content']}\n\n"
+        
+        print(f"Found {len(sources)} sources to analyze")
         
         # 3. Summarize using LLM with improved prompt
         prompt = PromptTemplate(
@@ -76,7 +86,10 @@ Be objective, factual, and cite sources where relevant. Avoid speculation.""",
         response = prompt | llm
         result = response.invoke({"topic": topic, "search_content": search_content})
         
-        return {"research_data": result.content}
+        return {
+            "research_data": result.content,
+            "sources": sources
+        }
         
     except LangChainException as e:
         return {"error": f"Search error: {str(e)}"}
@@ -250,7 +263,7 @@ QUALITY REQUIREMENTS:
             input_variables=["topic", "blog_outline", "research_data"]
         )
         
-        chain = prompt | llm
+        chain = prompt | llm_creative
         response = chain.invoke({
             "topic": topic,
             "blog_outline": blog_outline,
@@ -263,3 +276,129 @@ QUALITY REQUIREMENTS:
         return {"error": f"Writer error: {str(e)}"}
     except Exception as e:
         return {"error": f"Unexpected error in writer: {str(e)}"}
+
+# --- NODE 4: FACT-CHECKER ---
+def fact_checker_node(state: AgentState) -> dict:
+    """
+    Fact-checking node that verifies claims made in the blog post
+    against the original research data. Ensures authenticity and accuracy.
+    
+    Args:
+        state: Current agent state containing blog post and research data
+        
+    Returns:
+        Updated state with fact_check_report or error message
+    """
+    try:
+        blog_post = state.get('final_blog_post')
+        research_data = state.get('research_data')
+        topic = state.get('topic')
+        sources = state.get('sources', [])
+        
+        # Defensive coding: ensure we have required data
+        if state.get('error'):
+            return {"error": f"Cannot fact-check: {state.get('error')}"}
+        
+        if not blog_post:
+            return {"error": "No blog post to verify"}
+        
+        if not research_data:
+            return {"error": "No research data available for fact-checking"}
+        
+        print(f"--- FACT-CHECKER AGENT WORKING ---")
+        print(f"Verifying claims in blog post...")
+        
+        # Format sources for reference
+        sources_info = "\n".join([
+            f"- {s['title']} ({s['url']})" 
+            for s in sources
+        ]) if sources else "No sources tracked"
+        
+        prompt = PromptTemplate(
+            template="""You are a Fact-Checking Expert with expertise in verifying content accuracy and authenticity.
+
+TOPIC: {topic}
+
+ORIGINAL RESEARCH DATA (TRUSTED SOURCE):
+{research_data}
+
+SOURCES USED:
+{sources_info}
+
+GENERATED BLOG POST (TO VERIFY):
+{blog_post}
+
+FACT-CHECKING INSTRUCTIONS:
+1. Extract all major claims and statistics from the blog post
+2. Check if each claim is supported by the research data
+3. Flag any claims that are NOT in the research data
+4. Check for exaggerations or misrepresentations
+5. Verify statistical accuracy (numbers, percentages, dates)
+6. Identify any potential hallucinations or unsupported statements
+7. Rate the overall trustworthiness of the content
+
+OUTPUT FORMAT:
+
+# Fact-Check Report for: {topic}
+
+## ✓ VERIFIED CLAIMS (Supported by Research)
+- Claim 1: [Quote from blog] → VERIFIED IN SOURCE
+- Claim 2: [Quote from blog] → VERIFIED IN SOURCE
+- (List all major verified claims)
+
+## ⚠️ UNVERIFIED CLAIMS (NOT in original research)
+- Claim 1: [Quote from blog] → NOT FOUND IN RESEARCH DATA
+- Claim 2: [Quote from blog] → NEEDS VERIFICATION
+- (List any claims not directly supported)
+
+## ❌ POTENTIAL ISSUES
+- Issue 1: [Description and recommendation]
+- Issue 2: [Description and recommendation]
+- (List any concerns about accuracy or clarity)
+
+## TRUST SCORE BREAKDOWN
+
+**Overall Trust Score: X/10**
+
+- Research Quality: X/10
+  - Sources reputation and credibility
+  - Data recency and relevance
+  
+- Fact Accuracy: X/10
+  - Percentage of claims verified
+  - Statistical accuracy
+  
+- Hallucination Risk: X/10
+  - Likelihood of AI-generated unsupported claims
+  - Natural flow of verified information
+  
+- Source Transparency: X/10
+  - Clear citation of sources
+  - Link to original materials
+
+## RECOMMENDATIONS
+- [What to improve or verify further]
+- [Any claims that should be modified]
+- [Suggestions for strengthening credibility]
+
+## PUBLICATION READINESS
+- ✅ Ready to Publish (if score is 8-10)
+- ⚠️ Needs Minor Edits (if score is 6-8)
+- ❌ Requires Significant Revision (if score is below 6)""",
+            input_variables=["topic", "research_data", "blog_post", "sources_info"]
+        )
+        
+        chain = prompt | llm
+        response = chain.invoke({
+            "topic": topic,
+            "research_data": research_data,
+            "blog_post": blog_post,
+            "sources_info": sources_info
+        })
+        
+        return {"fact_check_report": response.content}
+        
+    except LangChainException as e:
+        return {"error": f"Fact-checker error: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Unexpected error in fact-checker: {str(e)}"}
