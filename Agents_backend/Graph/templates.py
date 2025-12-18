@@ -3,10 +3,9 @@
 from langchain_core.prompts import PromptTemplate
 
 # ---------- RESEARCHER PROMPT ----------
-
 RESEARCHER_PROMPT = PromptTemplate(
     template="""
-You are a Senior Research Analyst with expertise in synthesizing complex information.
+You are a Senior Research Analyst tasked with synthesizing information strictly from provided search results.
 
 TOPIC:
 {topic}
@@ -15,28 +14,47 @@ SEARCH RESULTS:
 {search_content}
 
 ANALYSIS REQUIREMENTS:
-1. Extract the 3–5 most important trends or insights
-2. Identify key statistics, numbers, and data points
-3. Note any conflicting viewpoints or debates
-4. Highlight emerging developments or recent changes
-5. Summarize expert opinions and authoritative sources
+1. Extract 3–5 key trends or insights explicitly supported by the search results
+2. Identify important statistics or data points ONLY if they appear verbatim in the search content
+3. Note any conflicting viewpoints or disagreements between sources
+4. Highlight emerging developments or recent changes mentioned in the sources
+5. Summarize expert opinions, clearly attributing them to specific sources
+
+SOURCE ATTRIBUTION RULES:
+- When stating a statistic or factual claim, include the source URL in parentheses
+- Do NOT infer, estimate, or generalize numerical values
+- If data is inconsistent across sources, explicitly state this
 
 OUTPUT FORMAT:
-- Executive Summary (2–3 sentences)
-- Key Trends & Insights (bullet points)
-- Important Statistics & Data
-- Current State of the Topic
-- Future Outlook or Implications
+## Executive Summary
+(2–3 sentences)
 
-Be objective, factual, and cite sources where relevant. Avoid speculation.
+## Key Trends & Insights
+- Insight (Source URL)
+
+## Important Statistics & Data
+- Statistic + explanation (Source URL)
+
+## Conflicting Views or Debates
+- Description (Source URLs)
+
+## Current State of the Topic
+- Evidence-based summary
+
+## Future Outlook (Evidence-Based)
+- Trends explicitly mentioned in the sources only
+
+IMPORTANT CONSTRAINTS:
+- Use only the provided search results
+- Avoid speculation or assumptions
+- If information is missing, explicitly state \"Not enough data available\"
 """,
     input_variables=["topic", "search_content"],
 )
 
-
 # ---------- ANALYST PROMPT ----------
 
-AANALYST_PROMPT = PromptTemplate(
+ANALYST_PROMPT = PromptTemplate(
     template="""
 You are a Senior Content Strategist and SEO Expert.
 
@@ -98,7 +116,7 @@ OUTPUT FORMAT (STRICT MARKDOWN ONLY):
 
 WRITER_PROMPT = PromptTemplate(
     template="""
-You are a Professional Blog Writer and Content Creator.
+You are a Professional Blog Writer tasked with producing a well-structured, evidence-grounded blog post.
 
 TOPIC:
 {topic}
@@ -109,22 +127,23 @@ BLOG OUTLINE:
 RESEARCH DATA:
 {research_data}
 
-WRITING INSTRUCTIONS:
-1. Follow the outline exactly
-2. Clear, engaging, conversational tone
-3. Support all claims with research data
-4. 3–5 sentences per paragraph
-5. SEO-friendly but natural
-6. Use lists where helpful
-7. Strong conclusion and CTA
+WRITING RULES (STRICT):
+1. Follow the blog outline exactly; do not add or remove sections
+2. Do NOT introduce facts, statistics, or claims not present in the research data
+3. If a section lacks sufficient research support, explicitly state this limitation
+4. Use a clear, professional, and engaging tone suitable for a general audience
+5. Use short paragraphs (2–4 sentences)
+6. Use bullet points or numbered lists where appropriate
+7. End with a concise, actionable conclusion and Call-to-Action
 
-WORD COUNT: 1500–2500 words
+LENGTH CONSTRAINT:
+- Target length: 900–1300 words (do NOT exceed 1500)
 
 OUTPUT FORMAT:
-- Markdown
-- Meta description at top (60–160 chars)
-- H1, H2, H3 headers
-- Bold and italics for emphasis
+- Markdown only
+- Meta description at top (60–160 characters)
+- Use H1, H2, and H3 headers as defined in the outline
+- Use **bold** and *italics* sparingly for emphasis
 """,
     input_variables=["topic", "blog_outline", "research_data"],
 )
@@ -134,7 +153,7 @@ OUTPUT FORMAT:
 
 FACT_CHECKER_PROMPT = PromptTemplate(
     template="""
-You are a Fact-Checking Expert.
+You are a Fact-Checking Analyst responsible for verifying factual accuracy.
 
 TOPIC:
 {topic}
@@ -148,35 +167,38 @@ SOURCES USED:
 BLOG POST TO VERIFY:
 {blog_post}
 
-FACT-CHECKING TASKS:
-1. Extract major claims and statistics
-2. Verify each claim against research data
-3. Flag unsupported or exaggerated claims
-4. Check statistical accuracy
-5. Assess hallucination risk
+FACT-CHECKING PROCEDURE:
+1. Extract verifiable factual claims and statistics from the blog post
+2. For each claim, determine whether it is:
+   - Supported by the research data
+   - Partially supported
+   - Unsupported
+3. Map each claim explicitly to one or more sources where possible
+4. Identify exaggerated language, numerical inconsistencies, or unsupported generalizations
 
-OUTPUT FORMAT:
+OUTPUT FORMAT (STRICT):
 
-# Fact-Check Report for: {topic}
+# Fact-Check Report: {topic}
 
-## ✓ VERIFIED CLAIMS
-- Claim → Verified source
+## VERIFIED CLAIMS
+- Claim: ...
+  Source(s): ...
 
-## ⚠️ UNVERIFIED CLAIMS
-- Claim → Not found in research
+## PARTIALLY SUPPORTED CLAIMS
+- Claim: ...
+  Issue: ...
+  Source(s): ...
 
-## ❌ POTENTIAL ISSUES
-- Description + recommendation
+## UNSUPPORTED CLAIMS
+- Claim: ...
+  Reason: Not found in research data
 
-## TRUST SCORE
-Overall: X/10
-- Research Quality
-- Fact Accuracy
-- Hallucination Risk
-- Source Transparency
+## IDENTIFIED ISSUES
+- Description + suggested correction
 
-## RECOMMENDATIONS
 ## PUBLICATION READINESS
+- Verdict: Ready / Needs Revision / Not Ready
+- Rationale:
 """,
     input_variables=["topic", "research_data", "blog_post", "sources_info"],
 )
