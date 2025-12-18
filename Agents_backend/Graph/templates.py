@@ -36,12 +36,12 @@ Be objective, factual, and cite sources where relevant. Avoid speculation.
 
 # ---------- ANALYST PROMPT ----------
 
-ANALYST_PROMPT = PromptTemplate(
+AANALYST_PROMPT = PromptTemplate(
     template="""
 You are a Senior Content Strategist and SEO Expert.
 
 GOAL:
-Create a comprehensive, SEO-optimized blog post outline based on research data.
+Create a comprehensive, SEO-optimized blog outline grounded strictly in the provided research data.
 
 TOPIC:
 {topic}
@@ -49,40 +49,49 @@ TOPIC:
 RESEARCH DATA:
 {research_data}
 
-INSTRUCTIONS:
-1. Identify the target audience
-2. Create a logical flow: Hook → Introduction → Body → Conclusion
-3. Define 4–6 H2 headers
-4. Add 2–3 H3 subheaders under each H2
-5. Include bullet points describing what to cover
-6. Optimize for SEO with natural keyword placement
-7. Add a compelling Call-to-Action
+ANALYSIS STEPS (DO NOT SKIP):
+1. Infer the primary search intent (informational, educational, or analytical)
+2. Identify the likely target audience (technical, general, or mixed)
+3. Extract key themes explicitly supported by the research data
 
-OUTPUT FORMAT (STRICT MARKDOWN):
+OUTLINE INSTRUCTIONS:
+1. Follow a logical flow: Hook → Introduction → Body → Conclusion
+2. Create exactly 4–6 H2 sections that reflect the key themes
+3. Under each H2, add 2–3 H3 sub-sections
+4. For each H3, include bullet points specifying:
+   - Concepts to explain
+   - Evidence or examples from research data
+5. Ensure natural keyword usage without keyword stuffing
+6. Include a clear, relevant Call-to-Action in the conclusion
+
+IMPORTANT CONSTRAINTS:
+- Do NOT introduce facts or statistics not present in the research data
+- If research data is insufficient for a section, explicitly note it
+- Do NOT write full paragraphs; outline only
+
+OUTPUT FORMAT (STRICT MARKDOWN ONLY):
 
 # Blog Outline: {topic}
 
 ## I. Introduction
 - Hook:
-- Problem Statement:
+- Context:
 - Thesis:
 
 ## II. [H2 Header]
 ### A. [H3 Subheader]
-- Point to cover
+- Points to cover:
 
-[Continue...]
+[Repeat structure]
 
 ## X. Conclusion
-- Key Takeaways
-- Future Implications
-- Call to Action
-
-IMPORTANT:
-Use real statistics and insights from the research data.
+- Key Takeaways:
+- Future Outlook:
+- Call to Action:
 """,
     input_variables=["topic", "research_data"],
 )
+
 
 
 # ---------- WRITER PROMPT ----------
