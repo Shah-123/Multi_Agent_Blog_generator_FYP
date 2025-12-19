@@ -22,6 +22,13 @@ from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.exceptions import LangChainException
 
+import os
+from typing import Dict, Any, List
+from urllib.parse import urlparse
+from datetime import datetime, timedelta
+
+from langchain_openai import ChatOpenAI
+
 from Graph.state import AgentState
 from Graph.templates import (
     RESEARCHER_PROMPT,
@@ -45,33 +52,125 @@ tavily_tool = TavilySearchResults(
 
 llm = ChatOpenAI(
     model="gpt-4o",
-    temperature=0,
-)
-
-llm_creative = ChatOpenAI(
-    model="gpt-4o",
     temperature=0.7,
 )
 
+# ============= ADD THIS ENTIRE SECTION =============
+
+# TRUSTED SOURCES - These are always good
+TRUSTED_DOMAINS = {
+    # News
+    "bbc.com",
+    "reuters.com",
+    "apnews.com",
+    "theguardian.com",
+    "theverge.com",
+    "techcrunch.com",
+    
+    # Academic
+    "arxiv.org",
+    "scholar.google.com",
+    "nature.com",
+    
+    # Educational
+    "wikipedia.org",
+    "britannica.com",
+    "investopedia.com",
+    "khan-academy.org",
+    
+    # Government
+    "gov.uk",
+    "state.gov",
+    ".edu",
+    ".gov",
+}
+
+# BLOCKED SOURCES - Never use these
+BLOCKED_DOMAINS = {
+    "reddit.com",
+    "quora.com",
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "instagram.com",
+    "tiktok.com",
+    "medium.com",
+    "tumblr.com",
+    "blogspot.com",
+    "wordpress.com",
+}
+
+
+
+
+
+
+def validate_source(result: dict) -> tuple[bool, str]:
+    """
+    Check if a source is good quality.
+    Returns: (is_valid: bool, reason: str)
+    """
+    url = result.get("url", "").lower()
+    title = result.get("title", "").lower()
+    content = result.get("content", "").lower()
+    
+    # Extract domain
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace("www.", "")
+    except:
+        return False, "Invalid URL format"
+    
+    # CHECK 1: Blocked domains - automatic rejection
+    for blocked in BLOCKED_DOMAINS:
+        if blocked in domain:
+            return False, f"Blocked domain"
+    
+    # CHECK 2: Trusted domains - automatic accept
+    for trusted in TRUSTED_DOMAINS:
+        if trusted in domain:
+            return True, f"Trusted source"
+    
+    # CHECK 3: Educational/Government - good
+    if domain.endswith(".edu") or domain.endswith(".gov") or domain.endswith(".org"):
+        return True, "Official organization"
+    
+    # CHECK 4: Content too short = snippet only
+    if len(content) < 200:
+        return False, "Content too short"
+    
+    # CHECK 5: Opinion pieces
+    opinion_keywords = ["i think", "my opinion", "imho", "fake news"]
+    for keyword in opinion_keywords:
+        if keyword in content[:500]:
+            return False, "Opinion piece"
+    
+    # CHECK 6: AI-generated markers
+    ai_markers = ["as an ai", "i'm an ai", "i cannot"]
+    for marker in ai_markers:
+        if marker in content[:500]:
+            return False, "AI-generated content"
+    
+    return True, "Quality source"
+
+
+def generate_alternative_searches(topic: str) -> List[str]:
+    """
+    If first search fails, try different search terms.
+    """
+    return [
+        f"{topic} 2024",
+        f"{topic} latest",
+        f"{topic} research",
+        f"{topic} study",
+    ]
 # ---------------------------------------------------------------------------
 # NODE 1: RESEARCHER
 # ---------------------------------------------------------------------------
 
 def researcher_node(state: AgentState) -> Dict[str, Any]:
     """
-    Researcher Node
-
-    Purpose:
-        Performs external research using Tavily search and synthesizes
-        the results into a structured research report.
-
-    Inputs (AgentState):
-        - topic (str): The topic to research
-
-    Outputs (AgentState updates):
-        - research_data (str): Structured research summary
-        - sources (list[dict]): List of tracked sources
-        - error (str, optional): Error message if failure occurs
+    Researcher Node with Source Validation
     """
     try:
         topic = state.get("topic", "").strip()
@@ -79,45 +178,108 @@ def researcher_node(state: AgentState) -> Dict[str, Any]:
             return {"error": "Topic cannot be empty"}
 
         print("--- RESEARCHER AGENT WORKING ---")
-        print(f"Researching topic: {topic}")
+        print(f"Topic: {topic}")
+        print(f"🔍 Searching...")
 
+        # Get raw results
         search_results = tavily_tool.invoke(topic)
         if not search_results:
-            return {"error": "No search results found for the given topic"}
+            return {"error": "No search results found"}
 
-        sources = []
+        print(f"📊 Tavily returned {len(search_results)} results")
+
+        # Validate each result
+        validated_sources = []
+        rejected_sources = []
+
+        for i, result in enumerate(search_results, 1):
+            is_valid, reason = validate_source(result)
+
+            if is_valid:
+                validated_sources.append({
+                    "url": result.get("url"),
+                    "title": result.get("title"),
+                    "source": result.get("source"),
+                    "content": result.get("content"),
+                    "reason": reason,
+                })
+                print(f"  ✓ [{i}] {result.get('title')[:50]}...")
+            else:
+                rejected_sources.append({
+                    "url": result.get("url"),
+                    "title": result.get("title"),
+                    "reason": reason,
+                })
+                print(f"  ✗ [{i}] {result.get('title')[:50]}... ({reason})")
+
+        print(f"\n📈 Valid: {len(validated_sources)}, Rejected: {len(rejected_sources)}")
+
+        # If not enough good sources, retry
+        MIN_SOURCES = 3
+        if len(validated_sources) < MIN_SOURCES:
+            print(f"⚠️  Only {len(validated_sources)} sources. Trying alternatives...\n")
+
+            alternative_searches = generate_alternative_searches(topic)
+
+            for alt_topic in alternative_searches:
+                print(f"🔄 Retry: '{alt_topic}'")
+                alt_results = tavily_tool.invoke(alt_topic)
+
+                for result in alt_results:
+                    is_valid, reason = validate_source(result)
+                    if is_valid:
+                        validated_sources.append({
+                            "url": result.get("url"),
+                            "title": result.get("title"),
+                            "source": result.get("source"),
+                            "content": result.get("content"),
+                            "reason": reason,
+                        })
+                        print(f"  ✓ {result.get('title')[:50]}...")
+
+                if len(validated_sources) >= MIN_SOURCES:
+                    break
+
+        # Not enough sources
+        if len(validated_sources) < MIN_SOURCES:
+            return {
+                "error": f"Only found {len(validated_sources)} valid sources. Quality may be low."
+            }
+
+        # Build research from validated sources only
         search_content = ""
+        sources_for_state = []
 
-        for result in search_results:
-            sources.append({
-                "url": result.get("url"),
-                "title": result.get("title"),
-                "source": result.get("source"),
-            })
-
+        for source in validated_sources:
             search_content += (
-                f"Source: {result.get('url')}\n"
-                f"Title: {result.get('title', 'N/A')}\n"
-                f"Content: {result.get('content')}\n\n"
+                f"Source: {source.get('url')}\n"
+                f"Title: {source.get('title', 'N/A')}\n"
+                f"Content: {source.get('content')}\n\n"
             )
 
+            sources_for_state.append({
+                "url": source.get("url"),
+                "title": source.get("title"),
+                "source": source.get("source"),
+                "validation_status": source.get("reason"),
+            })
+
+        # Pass to GPT
         chain = RESEARCHER_PROMPT | llm
         response = chain.invoke({
             "topic": topic,
             "search_content": search_content,
         })
 
+        print(f"✅ Research complete using {len(validated_sources)} sources\n")
+
         return {
             "research_data": response.content,
-            "sources": sources,
+            "sources": sources_for_state,
         }
 
-    except LangChainException as e:
-        return {"error": f"Researcher node failed: {str(e)}"}
     except Exception as e:
-        return {"error": f"Unexpected researcher error: {str(e)}"}
-
-
+        return {"error": f"Researcher error: {str(e)}"}
 # ---------------------------------------------------------------------------
 # NODE 2: ANALYST
 # ---------------------------------------------------------------------------
@@ -202,7 +364,7 @@ def writer_node(state: AgentState) -> Dict[str, Any]:
         print("--- WRITER AGENT WORKING ---")
         print(f"Writing blog post for: {topic}")
 
-        chain = WRITER_PROMPT | llm_creative
+        chain = WRITER_PROMPT | llm
         response = chain.invoke({
             "topic": topic,
             "blog_outline": blog_outline,
