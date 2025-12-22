@@ -437,3 +437,51 @@ def fact_checker_node(state: AgentState) -> Dict[str, Any]:
         return {"error": f"Fact-checker node failed: {str(e)}"}
     except Exception as e:
         return {"error": f"Unexpected fact-checker error: {str(e)}"}
+
+
+
+def regenerate_blog_with_feedback(blog_outline: str, research_data: str, topic: str, llm_feedback: str, iteration: int = 1) -> str:
+    """
+    Regenerate blog post using LLM feedback to improve content.
+    
+    Args:
+        blog_outline: Original blog outline
+        research_data: Research data used
+        topic: Blog topic
+        llm_feedback: Feedback from LLM about improvements needed
+        iteration: Current iteration number
+    
+    Returns:
+        Improved blog post
+    """
+    
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
+    
+    prompt = f"""You are an expert content writer. A blog post has been evaluated and here's the feedback:
+
+FEEDBACK FOR IMPROVEMENT:
+{llm_feedback}
+
+TOPIC: {topic}
+ORIGINAL OUTLINE:
+{blog_outline}
+
+RESEARCH DATA:
+{research_data}
+
+Your task: Rewrite the blog post to address ALL the feedback points mentioned above.
+- Improve specific areas mentioned in the feedback
+- Maintain the original structure/outline
+- Keep all factual accuracy
+- Enhance readability and engagement
+- Make it publication-ready
+
+Write the complete blog post in Markdown format with proper headings, sections, and formatting."""
+    
+    response = llm.invoke(prompt)
+    improved_blog = response.content
+    
+    print(f"\n✅ Blog regenerated (Iteration {iteration})")
+    print(f"📏 New length: {len(improved_blog)} characters")
+    
+    return improved_blog
