@@ -452,7 +452,7 @@ def regenerate_blog_with_feedback(blog_outline: str, research_data: str, topic: 
         iteration: Current iteration number
     
     Returns:
-        Improved blog post
+        Improved blog post as a string. 
     """
     
     llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
