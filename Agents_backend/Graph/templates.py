@@ -116,7 +116,7 @@ OUTPUT FORMAT (STRICT MARKDOWN ONLY):
 
 WRITER_PROMPT = PromptTemplate(
     template="""
-You are a Professional Blog Writer tasked with producing a well-structured, evidence-grounded blog post.
+You are a Professional Blog Writer. Produce a high-quality blog post based on the provided research and outline.
 
 TOPIC:
 {topic}
@@ -127,27 +127,29 @@ BLOG OUTLINE:
 RESEARCH DATA:
 {research_data}
 
-WRITING RULES (STRICT):
-1. Follow the blog outline exactly; do not add or remove sections
-2. Do NOT introduce facts, statistics, or claims not present in the research data
-3. If a section lacks sufficient research support, explicitly state this limitation
-4. Use a clear, professional, and engaging tone suitable for a general audience
-5. Use short paragraphs (2–4 sentences)
-6. Use bullet points or numbered lists where appropriate
-7. End with a concise, actionable conclusion and Call-to-Action
+EVALUATOR FEEDBACK (IF ANY):
+{feedback}
 
-LENGTH CONSTRAINT:
-- Target length: 900–1300 words (do NOT exceed 1500)
+WRITING RULES:
+1. IMPROVEMENT: If there is 'EVALUATOR FEEDBACK' above, prioritize fixing those specific issues.
+2. STRICTNESS: Only use facts from the 'RESEARCH DATA'. Do not invent statistics.
+3. STRUCTURE: Use the H1, H2, and H3 headers exactly as defined in the outline.
+4. TONE: Professional, engaging, and authoritative.
+5. FORMATTING: Use Markdown. Use bolding for key terms. Keep paragraphs under 4 sentences.
+
+LENGTH INSTRUCTIONS:
+- This needs to be a long-form, comprehensive post. 
+- Expand deeply on every H3 sub-section with examples and evidence from the research.
 
 OUTPUT FORMAT:
-- Markdown only
-- Meta description at top (60–160 characters)
-- Use H1, H2, and H3 headers as defined in the outline
-- Use **bold** and *italics* sparingly for emphasis
-""",
-    input_variables=["topic", "blog_outline", "research_data"],
-)
+# [Title from Outline]
 
+> **Meta Description:** [60-160 characters summary]
+
+[Rest of the blog content...]
+""",
+    input_variables=["topic", "blog_outline", "research_data", "feedback"],
+)
 
 # ---------- FACT-CHECKER PROMPT ----------
 
