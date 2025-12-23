@@ -37,7 +37,7 @@ if not tavily_api_key:
     raise ValueError("TAVILY_API_KEY not found in environment variables")
 
 tavily_tool = TavilySearchResults(max_results=8, tavily_api_key=tavily_api_key)
-llm = ChatOpenAI(model="gpt-4o", temperature=0.5)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
 
 TRUSTED_DOMAINS = {
     "bbc.com", "reuters.com", "apnews.com", "theguardian.com", "theverge.com", 

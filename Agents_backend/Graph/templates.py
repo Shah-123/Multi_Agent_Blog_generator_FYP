@@ -13,6 +13,10 @@ TOPIC:
 SEARCH RESULTS:
 {search_content}
 
+SOURCE ATTRIBUTION RULES:
+1. For EVERY fact, statistic, or claim, you MUST provide the specific URL.
+2. Format: [Fact Description] (URL)
+
 ANALYSIS REQUIREMENTS:
 1. Extract 3–5 key trends or insights explicitly supported by the search results
 2. Identify important statistics or data points ONLY if they appear verbatim in the search content
@@ -130,12 +134,13 @@ RESEARCH DATA:
 EVALUATOR FEEDBACK (IF ANY):
 {feedback}
 
-WRITING RULES:
-1. IMPROVEMENT: If there is 'EVALUATOR FEEDBACK' above, prioritize fixing those specific issues.
-2. STRICTNESS: Only use facts from the 'RESEARCH DATA'. Do not invent statistics.
-3. STRUCTURE: Use the H1, H2, and H3 headers exactly as defined in the outline.
-4. TONE: Professional, engaging, and authoritative.
-5. FORMATTING: Use Markdown. Use bolding for key terms. Keep paragraphs under 4 sentences.
+WRITING RULES (STRICT):
+1. CITATION FORMAT: You MUST use Markdown hyperlinks. Never list raw URLs. 
+   - Correct: "According to [Reuters](https://reuters.com/news1), the economy is..."
+   - Incorrect: "According to Reuters (https://reuters.com/news1)..."
+2. PLACEMENT: Every major statistic or unique claim MUST have a hyperlink.
+3. TONE: Authoritative, objective, and engaging. Use short paragraphs (3-4 sentences).
+4. FEEDBACK: If 'EVALUATOR FEEDBACK' is provided, you must address those specific errors or improvements.
 
 LENGTH INSTRUCTIONS:
 - This needs to be a long-form, comprehensive post. 
@@ -147,6 +152,8 @@ OUTPUT FORMAT:
 > **Meta Description:** [60-160 characters summary]
 
 [Rest of the blog content...]
+[List all unique sources used in the blog as a numbered list at the very bottom]
+
 """,
     input_variables=["topic", "blog_outline", "research_data", "feedback"],
 )
