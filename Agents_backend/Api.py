@@ -6,10 +6,14 @@ from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
 
 # --- INTERNAL IMPORTS ---
 from main import build_graph, TopicValidator
 from database import SessionLocal, BlogRecord, init_db
+from dotenv import load_dotenv
+import os 
+load_dotenv()
 
 # Initialize database on startup
 init_db()
@@ -20,10 +24,19 @@ app = FastAPI(
     version="2.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+  '*'  # Production
+],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ---------------------------------------------------------------------------
 # SECURITY & DB DEPENDENCIES
 # ---------------------------------------------------------------------------
-API_KEY = "super-secret-key-123"
+API_KEY = os.getenv("API_KEY")
 api_key_header = APIKeyHeader(name="X-API-KEY")
 
 def get_db():
