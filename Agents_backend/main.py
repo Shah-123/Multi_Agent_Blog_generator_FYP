@@ -124,6 +124,8 @@ def run_app():
         print(f"Final Score: {eval_data.get('final_score')}/10")
         print(f"Factual Status: {final_output.get('quality_evaluation', {}).get('verdict')}")
         print(f"Iterations: {final_output.get('iteration_count')}")
+        print(f"Fact Checking : {final_output.get('fact_check_report')}")
+
     else:
         print(f"Error: {final_output.get('error')}")
 

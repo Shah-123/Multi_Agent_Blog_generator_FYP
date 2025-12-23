@@ -1,229 +1,145 @@
-from fastapi import FastAPI, HTTPException
+import json
+import uuid
+import asyncio
+from fastapi import FastAPI, HTTPException, Security, Depends, BackgroundTasks
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from sqlalchemy.orm import Session
 
-from dotenv import load_dotenv
-load_dotenv()
+# --- INTERNAL IMPORTS ---
+from main import build_graph, TopicValidator
+from database import SessionLocal, BlogRecord, init_db
 
-from main import build_graph, regenerate_blog_with_feedback
-from validators import TopicValidator, realistic_evaluation
-from Graph.nodes import fact_checker_node
+# Initialize database on startup
+init_db()
 
 app = FastAPI(
-    title="Multi-Agent Blog Generator API",
-    description="Runs a LangGraph-powered multi-agent workflow to generate fact-checked blogs",
-    version="3.0.0",
+    title="AI Content Factory Pro",
+    description="Enterprise Multi-Agent Blog Generation with Background Task Support.",
+    version="2.0.0"
 )
 
-# ============================================================================
-# REQUEST/RESPONSE MODELS
-# ============================================================================
+# ---------------------------------------------------------------------------
+# SECURITY & DB DEPENDENCIES
+# ---------------------------------------------------------------------------
+API_KEY = "super-secret-key-123"
+api_key_header = APIKeyHeader(name="X-API-KEY")
 
-class BlogRequest(BaseModel):
-    topic: str = Field(..., min_length=3, example="Future of AI in Healthcare")
-
-class BlogResponse(BaseModel):
-    topic: str
-    research_data: Optional[str] = None
-    sources: Optional[List[Dict]] = None
-    blog_outline: Optional[str] = None
-    final_blog_post: Optional[str] = None
-    improved_blog_post: Optional[str] = None
-    fact_check_report: Optional[str] = None
-    quality_evaluation: Optional[Dict] = None
-    error: Optional[str] = None
-
-class BlogRegenerationRequest(BaseModel):
-    topic: str
-    blog_outline: str
-    research_data: str
-    llm_feedback: str
-    iteration: int = Field(default=1, ge=1, le=5)
-
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
-
-@app.post("/generate-blog", response_model=BlogResponse)
-async def generate_blog(request: BlogRequest):
-    """
-    Generate a blog post with automatic quality evaluation and regeneration.
-    """
-    topic = request.topic.strip()
-    
-    if not topic:
-        raise HTTPException(status_code=400, detail="Topic cannot be empty")
-    
+def get_db():
+    db = SessionLocal()
     try:
-        # Step 1: Validate topic
-        topic_validator = TopicValidator()
-        validation_result = topic_validator.validate(topic)
-        
-        if not validation_result["valid"]:
-            return BlogResponse(
-                topic=topic,
-                error=f"Topic validation failed: {validation_result['reason']}"
-            )
-        
-        # Step 2: Build graph and run workflow
+        yield db
+    finally:
+        db.close()
+
+async def validate_api_key(key: str = Security(api_key_header)):
+    if key != API_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized API Key")
+    return key
+
+# ---------------------------------------------------------------------------
+# MODELS
+# ---------------------------------------------------------------------------
+class BlogRequest(BaseModel):
+    topic: str = Field(..., example="The impact of AI on software engineering")
+
+# ---------------------------------------------------------------------------
+# BACKGROUND WORKER (The "Task Engine")
+# ---------------------------------------------------------------------------
+def run_blog_workflow(blog_id: str, topic: str):
+    """Heavy AI logic running in the background."""
+    # We create a new DB session for the background thread
+    db = SessionLocal()
+    try:
+        # 1. Run the Graph
         graph = build_graph()
-        initial_state = {
+        final_state = graph.invoke({
             "topic": topic,
-            "research_data": "",
+            "iteration_count": 0,
             "sources": [],
+            "research_data": "",
             "blog_outline": "",
             "final_blog_post": "",
-            "fact_check_report": "",
-            "error": None,
-        }
+            "fact_check_report": ""
+        })
+
+        # 2. Extract results
+        eval_data = final_state.get("quality_evaluation", {})
         
-        # Run the complete workflow
-        final_state = graph.invoke(initial_state)
-        
-        # Check for errors
-        if final_state.get("error"):
-            return BlogResponse(
-                topic=topic,
-                error=final_state["error"]
-            )
-        
-        # Step 3: Evaluate quality
-        blog_post = final_state.get("final_blog_post", "")
-        research_data = final_state.get("research_data", "")
-        
-        quality_details = realistic_evaluation(
-            blog_post=blog_post,
-            research_data=research_data,
-            topic=topic
-        )
-        
-        final_state["quality_evaluation"] = quality_details
-        
-        # Step 4: Auto-regenerate if feedback available
-        llm_feedback_obj = quality_details.get("tier3", {}).get("feedback", "")
-        improved_blog = None
-        
-        if llm_feedback_obj:
-            improved_blog = regenerate_blog_with_feedback(
-                blog_outline=final_state.get("blog_outline", ""),
-                research_data=research_data,
-                topic=topic,
-                llm_feedback=llm_feedback_obj,
-                iteration=1
-            )
-            
-            # Fact-check improved blog
-            fact_check_state = {
-                "topic": topic,
-                "research_data": research_data,
-                "final_blog_post": improved_blog,
-                "error": None
-            }
-            
-            fact_check_result = fact_checker_node(fact_check_state)
-            final_state["fact_check_report"] = fact_check_result.get("fact_check_report", "No issues found")
-        
-        # Return complete response
-        return BlogResponse(
-            topic=final_state.get("topic"),
-            research_data=final_state.get("research_data"),
-            sources=final_state.get("sources"),
-            blog_outline=final_state.get("blog_outline"),
-            final_blog_post=final_state.get("final_blog_post"),
-            improved_blog_post=improved_blog,
-            fact_check_report=final_state.get("fact_check_report"),
-            quality_evaluation=final_state.get("quality_evaluation")
-        )
-        
+        # 3. Update Database
+        blog = db.query(BlogRecord).filter(BlogRecord.id == blog_id).first()
+        if blog:
+            blog.content = final_state.get("final_blog_post")
+            blog.score = eval_data.get("final_score")
+            blog.verdict = eval_data.get("verdict")
+            blog.fact_check = str(eval_data.get("tier2", {}).get("report", ""))
+            blog.status = "COMPLETED"
+            db.commit()
+            print(f"✅ Blog {blog_id} completed successfully.")
+
     except Exception as e:
-        return BlogResponse(
-            topic=topic,
-            error=f"API Error: {str(e)}"
-        )
+        print(f"❌ Background Task Error: {str(e)}")
+        blog = db.query(BlogRecord).filter(BlogRecord.id == blog_id).first()
+        if blog:
+            blog.status = f"FAILED: {str(e)}"
+            db.commit()
+    finally:
+        db.close()
 
+# ---------------------------------------------------------------------------
+# ENDPOINTS
+# ---------------------------------------------------------------------------
 
-@app.post("/regenerate-blog")
-async def regenerate_blog_manual(request: BlogRegenerationRequest):
+@app.post("/generate-async", tags=["Generation"])
+async def generate_async_blog(
+    request: BlogRequest, 
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    api_key: str = Depends(validate_api_key)
+):
     """
-    Manually regenerate a blog post with specific feedback.
+    Starts a generation task and returns a Job ID immediately.
+    No waiting for the AI.
     """
-    try:
-        if not all([request.topic, request.blog_outline, request.research_data, request.llm_feedback]):
-            raise HTTPException(status_code=400, detail="Missing required fields")
-        
-        improved_blog = regenerate_blog_with_feedback(
-            blog_outline=request.blog_outline,
-            research_data=request.research_data,
-            topic=request.topic,
-            llm_feedback=request.llm_feedback,
-            iteration=request.iteration
-        )
-        
-        return {
-            "topic": request.topic,
-            "iteration": request.iteration,
-            "improved_blog_post": improved_blog,
-            "blog_length": len(improved_blog),
-            "status": "success"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # 1. Pre-Gatekeeper check (fast)
+    validator = TopicValidator()
+    validation = validator.validate(request.topic)
+    if not validation["valid"]:
+        raise HTTPException(status_code=400, detail=validation["reason"])
 
+    # 2. Create Job ID and Pending Record
+    blog_id = str(uuid.uuid4())
+    new_blog = BlogRecord(id=blog_id, topic=request.topic, status="PENDING")
+    db.add(new_blog)
+    db.commit()
 
-@app.post("/evaluate-blog")
-async def evaluate_blog_quality(blog_data: Dict):
-    """
-    Evaluate an existing blog post for quality.
-    """
-    try:
-        blog_post = blog_data.get("blog_post")
-        topic = blog_data.get("topic")
-        research_data = blog_data.get("research_data", "")
-        
-        if not blog_post or not topic:
-            raise HTTPException(status_code=400, detail="blog_post and topic are required")
-        
-        quality_details = realistic_evaluation(
-            blog_post=blog_post,
-            research_data=research_data,
-            topic=topic
-        )
-        
-        return {
-            "topic": topic,
-            "quality_evaluation": quality_details,
-            "status": "success"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # 3. Queue the background task
+    background_tasks.add_task(run_blog_workflow, blog_id, request.topic)
 
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
     return {
-        "status": "ok",
-        "version": "3.0.0",
-        "features": [
-            "blog-generation",
-            "quality-evaluation",
-            "auto-regeneration",
-            "fact-checking"
-        ]
+        "status": "Task Started",
+        "job_id": blog_id,
+        "check_status_at": f"/status/{blog_id}"
     }
 
-
-@app.get("/")
-async def root():
-    """API Information"""
+@app.get("/status/{job_id}", tags=["Monitoring"])
+def get_job_status(job_id: str, db: Session = Depends(get_db), api_key: str = Depends(validate_api_key)):
+    """Check the status and get the result of a specific job."""
+    blog = db.query(BlogRecord).filter(BlogRecord.id == job_id).first()
+    if not blog:
+        raise HTTPException(status_code=404, detail="Job ID not found")
+    
     return {
-        "name": "Multi-Agent Blog Generator API",
-        "version": "3.0.0",
-        "endpoints": {
-            "POST /generate-blog": "Generate blog with auto-evaluation and regeneration",
-            "POST /regenerate-blog": "Manually regenerate blog with feedback",
-            "POST /evaluate-blog": "Evaluate existing blog quality",
-            "GET /health": "Health check",
-            "GET /docs": "API documentation (Swagger UI)"
-        }
+        "id": blog.id,
+        "topic": blog.topic,
+        "status": blog.status,
+        "quality_score": blog.score,
+        "created_at": blog.created_at,
+        "content": blog.content if blog.status == "COMPLETED" else None
     }
+
+@app.get("/history", tags=["Management"])
+def get_history(db: Session = Depends(get_db), api_key: str = Depends(validate_api_key)):
+    """List all previous generations."""
+    return db.query(BlogRecord).order_by(BlogRecord.created_at.desc()).all()
