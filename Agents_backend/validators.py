@@ -6,7 +6,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 
 # ============================================================================
-# 1. TOPIC VALIDATOR
+# 1. TOPIC VALIDATOR (Unchanged)
 # ============================================================================
 
 class TopicValidator:
@@ -43,7 +43,7 @@ class TopicValidator:
         return {"valid": ok, "reason": msg}
 
 # ============================================================================
-# 2. EVALUATOR - Tier 1: Structure
+# 2. EVALUATOR - Tier 1: Structure (UPDATED FOR LONG-FORM)
 # ============================================================================
 
 class HardMetrics:
@@ -52,10 +52,22 @@ class HardMetrics:
         h1 = len(re.findall(r'^# ', blog_post, re.M))
         h2 = len(re.findall(r'^## ', blog_post, re.M))
         h3 = len(re.findall(r'^### ', blog_post, re.M))
+        
         score = 0
+        
+        # H1 Check (Should be exactly 1)
         if h1 == 1: score += 3
-        if 3 <= h2 <= 7: score += 4
-        if h3 >= 2: score += 3
+        
+        # H2 Check (Updated for Skyscraper content)
+        # Standard blog: 3-7. Skyscraper: 5-20.
+        if 5 <= h2 <= 20: 
+            score += 4
+        elif h2 > 20: # Too fragmented
+            score += 2
+        
+        # H3 Check (Deep content needs subsections)
+        if h3 >= 3: score += 3
+        
         return {"score": score, "details": f"H1: {h1}, H2: {h2}, H3: {h3}"}
 
     @staticmethod
@@ -68,7 +80,7 @@ class HardMetrics:
         return {"score": max(0, round(score, 1)), "details": f"Avg Sentence: {avg_len:.1f}"}
 
 # ============================================================================
-# 3. EVALUATOR - Tier 2: NLI Fact-Checking
+# 3. EVALUATOR - Tier 2: NLI Fact-Checking (UPDATED CONTEXT)
 # ============================================================================
 
 class DataDrivenMetrics:
@@ -76,18 +88,20 @@ class DataDrivenMetrics:
     def verify_claims_nli(blog_post: str, research_data: str) -> Dict:
         llm = ChatOpenAI(model="gpt-4o", temperature=0)
         
-        # We pass the research data and ask the LLM to map claims to URLs found in that text
+        # 🆕 INCREASED LIMITS: GPT-4o has a huge context window. 
+        # We increase input size to ensure we check the WHOLE article, not just the intro.
         prompt = f"""
         Compare the BLOG CLAIMS against the RESEARCH DATA.
         
         RESEARCH DATA (contains URLs):
-        {research_data[:4000]}
+        {research_data[:25000]} 
         
-        BLOG EXCERPT:
-        {blog_post[:2000]}
+        BLOG CONTENT:
+        {blog_post[:20000]}
         
         TASK:
-        Identify 5 factual claims in the blog. For each:
+        Identify 5-7 MAJOR factual claims scattered throughout the blog (Intro, Middle, and Conclusion). 
+        For each:
         1. Categorize: [SUPPORTED], [NEUTRAL], or [CONTRADICTED].
         2. Provide the Source URL from the RESEARCH DATA that justifies this category.
         
@@ -98,15 +112,17 @@ class DataDrivenMetrics:
         """
         try:
             res = llm.invoke(prompt).content
-            # Score logic remains the same
+            
             sup = res.count("[SUPPORTED]")
             con = res.count("[CONTRADICTED]")
+            
+            # Simple scoring math
             score = max(0, min(10, (sup * 2) - (con * 5)))
             
             return {
                 "score": float(score),
                 "hallucination_detected": con > 0,
-                "report": res # This now contains the URLs
+                "report": res 
             }
         except:
             return {"score": 5, "report": "Error in NLI"}
@@ -120,7 +136,7 @@ class LLMFeedback:
         self.llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
 
     def get_improvements(self, blog_post: str, topic: str, scores: Dict) -> Dict:
-        prompt = f"Analyze blog on '{topic}'. Scores: {scores}. Provide 3 short tips."
+        prompt = f"Analyze blog on '{topic}'. Scores: {scores}. Provide 3 short, actionable tips to improve flow or depth."
         response = self.llm.invoke(prompt)
         return {"feedback": response.content}
 

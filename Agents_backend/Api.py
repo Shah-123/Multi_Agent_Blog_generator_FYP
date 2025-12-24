@@ -24,15 +24,20 @@ app = FastAPI(
     version="2.0.0"
 )
 
+
+
+
+# ADD THIS IMMEDIATELY AFTER app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-  '*'  # Production
-],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# All your @app.get() and @app.post() routes go AFTER this
+
 # ---------------------------------------------------------------------------
 # SECURITY & DB DEPENDENCIES
 # ---------------------------------------------------------------------------

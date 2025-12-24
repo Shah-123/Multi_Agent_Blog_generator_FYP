@@ -1,6 +1,6 @@
-
 from langchain_core.prompts import PromptTemplate
 
+# 1. RESEARCHER (Unchanged)
 RESEARCHER_PROMPT = PromptTemplate(
     template="""
 You are a Senior Research Analyst. Your goal is to synthesize raw data into a structured intelligence report.
@@ -30,75 +30,77 @@ OUTPUT STRUCTURE:
     input_variables=["topic", "search_content"],
 )
 
+# 2. COMPETITOR ANALYSIS (Unchanged)
+COMPETITOR_ANALYSIS_PROMPT = PromptTemplate(
+    template="""
+You are an SEO Strategist. Analyze the following Top Ranking Search Results.
 
+TOPIC: {topic}
+SEARCH CONTEXT: {search_content}
+
+TASK:
+Extract the common "Content Structure" used by these competitors. 
+Identify the High-Level Themes (H2s) they all cover, and any unique angles (H3s) that only one covers.
+
+OUTPUT FORMAT (Markdown):
+- Common Theme: [Name] (Covered by Source A, B)
+- Unique Angle: [Name] (Covered by Source C)
+- Missing Gap: [What is NOBODY talking about that we should?]
+""",
+    input_variables=["topic", "search_content"]
+)
+
+# 3. ANALYST (Structured for Schema)
 ANALYST_PROMPT = PromptTemplate(
     template="""
-You are a Senior Content Strategist. Your task is to build a "Blue-Print" for a 1,200-word blog post.
+You are a Senior Content Strategist. Create a comprehensive content plan based on competitor analysis.
 
 TOPIC: {topic}
+COMPETITOR STRUCTURE: {competitor_headers}
 RESEARCH DATA: {research_data}
 
-STRICT RULE: YOU MUST PRESERVE CITATIONS.
-In the outline, every bullet point that contains a fact MUST include the URL provided in the research. The Writer will use these to create hyperlinks.
+TASK: 
+1. Analyze the competitor structures.
+2. Create a "Skyscraper" outline that covers ALL their points + missing gaps.
+3. Your output must be a Structured Object containing the Markdown outline and a List of Sections.
 
-OUTLINE STRUCTURE:
-# [SEO Optimized Title]
-
-## I. Introduction
-- Hook:
-- **Key Takeaways Box**: (List 3 bullet points that summarize the article)
-
-## II. [H2 Header]
-### A. [H3 Subheader]
-- Point to cover (Include URL from research)
-- Point to cover (Include URL from research)
-
-[Continue for 4-6 H2 sections]
-
-## VI. Conclusion
-- Call to Action:
+Ensure the "sections" list includes the Introduction, all H2 headers, and the Conclusion.
 """,
-    input_variables=["topic", "research_data"],
+    input_variables=["topic", "competitor_headers", "research_data"],
 )
 
-
+# 4. WRITER (🚨 UPDATED FOR RECURSIVE WRITING 🚨)
+# This was causing your error. It now accepts 'section_title' and 'previous_content'.
 WRITER_PROMPT = PromptTemplate(
     template="""
-You are a Professional Journalist writing for a high-tier publication like Harvard Business Review or Wired.
+You are a Professional Journalist writing a specific section of a long-form article.
 
 TOPIC: {topic}
-OUTLINE: {blog_outline}
-RESEARCH: {research_data}
-FEEDBACK: {feedback}
+CURRENT SECTION HEADER: {section_title}
+CONTENT WRITTEN SO FAR: 
+{previous_content}
 
-WRITING STANDARDS:
-1. THE "KEY TAKEAWAYS" BOX: Immediately after the introduction, create a Markdown callout box (using `>`) with 3-4 bullet points titled "Key Takeaways."
-2. HYPERLINKING: Convert URLs into descriptive hyperlinks. 
-   - Correct: "[Forbes reports](https://forbes.com/...) that AI..."
-   - Incorrect: "AI is growing (https://forbes.com/)."
-3. TONE: Avoid "hype" words like "revolutionary" or "game-changer." Use data-driven, sober language.
-4. PARAGRAPHS: Maximum 4 sentences per paragraph.
+RESEARCH DATA: {research_data}
 
-OUTPUT FORMAT:
-# [Title]
-[Meta Description]
+TASK:
+Write the content for ONLY the "{section_title}" section.
+1. Maintain the flow from the "CONTENT WRITTEN SO FAR" (do not repeat information).
+2. Use the RESEARCH DATA to back up claims with citations.
+3. If this is the Introduction, include a 'Key Takeaways' box.
+4. If this is the Conclusion, wrap up strongly.
+5. Write 400-600 words for this section.
 
-[Introduction]
-> ### Key Takeaways
-> - Point 1
-> - Point 2
+FORMATTING:
+- Use Markdown.
+- Add descriptive hyperlinks (e.g., "[Source Name](url)").
+- Do NOT repeat the header "{section_title}" at the start (I will add it automatically).
 
-[Main Content with H2/H3 headers and embedded links]
-
-## References
-[Alphabetical list of all sources used]
+WRITE NOW:
 """,
-    input_variables=["topic", "blog_outline", "research_data", "feedback"],
+    input_variables=["topic", "section_title", "previous_content", "research_data"],
 )
 
-
-#### 4. The Adversarial Fact-Checker
-
+# 5. FACT CHECKER (Unchanged)
 FACT_CHECKER_PROMPT = PromptTemplate(
     template="""
 You are an Adversarial Fact-Checker. Your job is to find reasons to REJECT this blog.
@@ -127,5 +129,5 @@ OUTPUT FORMAT:
 VERDICT: [READY / REJECTED]
 RATIONALE:
 """,
-    input_variables=["topic", "research_data", "blog_post", "sources_info"],
+    input_variables=["topic", "research_data", "blog_post"],
 )
