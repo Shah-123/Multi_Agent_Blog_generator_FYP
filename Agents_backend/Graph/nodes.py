@@ -1,13 +1,17 @@
 import os
+import json
+import re
+import uuid
 import requests
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from urllib.parse import urlparse
 
-# 🆕 NEW IMPORTS FOR STRUCTURED OUTPUT
-from pydantic import BaseModel, Field 
-
+# 1. IMPORTS
 from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_core.prompts import PromptTemplate
+# 🆕 OFFICIAL HUGGING FACE CLIENT
+from huggingface_hub import InferenceClient 
 
 from Graph.state import AgentState
 from Graph.templates import (
@@ -19,15 +23,13 @@ from Graph.templates import (
 )
 
 # ---------------------------------------------------------------------------
-# 1. CONFIGURATION
+# 2. CONFIGURATION
 # ---------------------------------------------------------------------------
 
 tavily_api_key = os.getenv("TAVILY_API_KEY")
-if not tavily_api_key:
-    raise ValueError("TAVILY_API_KEY not found")
-
 tavily_tool = TavilySearchResults(max_results=5, tavily_api_key=tavily_api_key)
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+llm_cheap = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 FIRECRAWL_API_URL = "https://api.firecrawl.dev/v1/scrape"
@@ -37,229 +39,345 @@ BLOCKED_DOMAINS = {
     "instagram.com", "tiktok.com", "medium.com", "blogspot.com"
 }
 
-TRUSTED_DOMAINS = {
-    "bbc.com", "reuters.com", "apnews.com", "theguardian.com", "theverge.com", 
-    "techcrunch.com", "arxiv.org", "nature.com", "wikipedia.org", "britannica.com",
-    "investopedia.com", "gov.uk", "state.gov"
-}
+# ---------------------------------------------------------------------------
+# 🆕 3. RESEARCH COMPRESSOR (Token Leak Fix)
+# ---------------------------------------------------------------------------
+
+class ResearchCompressor:
+    """Compress 16KB research → 2KB structured data."""
+    
+    def __init__(self):
+        self.llm = llm_cheap
+    
+    def compress(self, raw_research: str, topic: str) -> Dict[str, Any]:
+        """Convert raw research into structured, compact format."""
+        
+        prompt = PromptTemplate(
+            template="""
+Extract key facts from this research on '{topic}'. Be RUTHLESS about compression.
+
+RAW RESEARCH:
+{raw_research}
+
+OUTPUT AS PURE JSON (NO OTHER TEXT):
+{{
+    "key_facts": [
+        {{"fact": "specific factual claim", "url": "source URL", "confidence": "HIGH/MEDIUM/LOW"}},
+        {{...max 5 facts}}
+    ],
+    "statistics": [
+        {{"stat": "specific number/percentage", "context": "what it refers to", "url": "source URL", "year": 2024}},
+        {{...max 5 stats}}
+    ],
+    "quotes": [
+        {{"quote": "exact quote under 50 words", "author": "name if given", "url": "source URL"}},
+        {{...max 3 quotes}}
+    ]
+}}
+
+CRITICAL RULES:
+- Extract ONLY verifiable claims with URLs
+- Maximum 5 facts, 5 statistics, 3 quotes total
+- No fluff or generic statements
+- If fact has no URL, EXCLUDE IT
+- Each entry MUST be citable
+""",
+            input_variables=["topic", "raw_research"],
+        )
+        
+        try:
+            chain = prompt | self.llm
+            response = chain.invoke({
+                "topic": topic,
+                "raw_research": raw_research[:12000]
+            })
+            
+            json_text = response.content
+            json_match = re.search(r'\{.*\}', json_text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+        except Exception as e:
+            print(f"⚠️ Compression failed: {e}")
+        
+        return {
+            "key_facts": [],
+            "statistics": [],
+            "quotes": []
+        }
 
 # ---------------------------------------------------------------------------
-# 2. HELPER FUNCTIONS
+# 🆕 4. CITATION INDEX (Token Leak Fix)
+# ---------------------------------------------------------------------------
+
+class CitationIndex:
+    """Lightweight lookup for citations."""
+    
+    def __init__(self, compressed_research: Dict[str, Any]):
+        self.compressed = compressed_research
+    
+    def to_string(self) -> str:
+        """Convert to compact string format for LLM input (max 2KB)."""
+        lines = []
+        lines.append("# CITABLE CLAIMS INDEX\n")
+        
+        lines.append("## Facts")
+        for f in self.compressed.get("key_facts", [])[:5]:
+            lines.append(f"- {f['fact']} ({f['url']}) [Confidence: {f.get('confidence', 'MEDIUM')}]")
+        
+        lines.append("\n## Statistics")
+        for s in self.compressed.get("statistics", [])[:5]:
+            lines.append(f"- {s['stat']} ({s['url']}) [Year: {s.get('year', 'N/A')}]")
+        
+        lines.append("\n## Direct Quotes")
+        for q in self.compressed.get("quotes", [])[:3]:
+            author = f"- {q.get('author', 'Unknown')}" if q.get('author') else ""
+            lines.append(f"- \"{q['quote']}\" {author} ({q['url']})")
+        
+        return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
+# 5. HELPER FUNCTIONS
 # ---------------------------------------------------------------------------
 
 def validate_source(result: dict) -> tuple[bool, str]:
     url = result.get("url", "").lower()
     content = result.get("content", "").lower()
-    
-    try:
-        domain = urlparse(url).netloc.replace("www.", "")
-    except:
-        return False, "Invalid URL"
-
-    if any(blocked in domain for blocked in BLOCKED_DOMAINS):
-        return False, "Unreliable/Social Media"
-    
-    if len(content) < 300:
-        return False, "Insufficient content"
-        
-    return True, "General Web"
+    if any(blocked in url for blocked in BLOCKED_DOMAINS): return False, "Unreliable"
+    if len(content) < 300: return False, "Thin content"
+    return True, "Valid"
 
 def scrape_with_firecrawl_api(url: str) -> str:
-    """Direct API call to Firecrawl."""
-    if not FIRECRAWL_API_KEY:
-        print("⚠️ Firecrawl API Key missing.")
-        return ""
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {FIRECRAWL_API_KEY}"
-    }
-    
-    payload = {
-        "url": url,
-        "formats": ["markdown"]
-    }
-
+    if not FIRECRAWL_API_KEY: return ""
+    headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}"}
+    payload = {"url": url, "formats": ["markdown"]}
     try:
-        response = requests.post(FIRECRAWL_API_URL, headers=headers, json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success") and "data" in data:
-                return data["data"].get("markdown", "")
-            return ""
-        else:
-            print(f"⚠️ Firecrawl API Error {response.status_code}: {response.text}")
-            return ""
-    except Exception as e:
-        print(f"⚠️ Firecrawl Request Failed: {e}")
+        res = requests.post(FIRECRAWL_API_URL, headers=headers, json=payload, timeout=30)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("success"): return data["data"].get("markdown", "")
+        return ""
+    except:
         return ""
 
-# ---------------------------------------------------------------------------
-# 3. SCHEMA DEFINITION (The Solution)
-# ---------------------------------------------------------------------------
+def extract_json_from_response(content: str) -> dict:
+    """Robustly extracts JSON from LLM output using Regex."""
+    try:
+        return json.loads(content)
+    except:
+        pass
 
-class BlogPlan(BaseModel):
-    """The structured output we want from the Analyst."""
-    blog_outline: str = Field(description="The full Markdown outline of the blog post")
-    sections: List[str] = Field(description="A list of section headers (H2) to write one by one")
+    # Regex: Find content between ```json and ```
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+    if match:
+        try: return json.loads(match.group(1))
+        except: pass
+            
+    # Regex: Find first '{' and last '}'
+    match = re.search(r"(\{.*\})", content, re.DOTALL)
+    if match:
+        try: return json.loads(match.group(1))
+        except: pass
+            
+    # Fallback
+    return {
+        "blog_outline": content, 
+        "sections": ["Introduction", "Main Body", "Conclusion"],
+        "seo_title": "Generated Blog Post",
+        "meta_description": "A blog post generated by AI.",
+        "target_keywords": []
+    }
 
 # ---------------------------------------------------------------------------
-# 4. GRAPH NODES
+# 6. GRAPH NODES - RESEARCHER (WITH COMPRESSION)
 # ---------------------------------------------------------------------------
 
 def researcher_node(state: AgentState) -> Dict[str, Any]:
-    topic = state.get("topic", "").strip()
-    print(f"--- 🔍 RESEARCHING & SCRAPING (Direct API): {topic} ---")
-
+    print("--- 🔍 RESEARCHING ---")
+    topic = state.get("topic", "")
+    
     try:
-        # 1. Get Search Results
         raw_results = tavily_tool.invoke(topic)
-        valid_urls = []
-        source_metadata = []
+        urls = [r['url'] for r in raw_results if validate_source(r)[0]][:2]
         
-        for res in raw_results:
-            is_valid, reason = validate_source(res)
-            if is_valid:
-                valid_urls.append(res['url'])
-                source_metadata.append({"url": res.get("url"), "title": res.get("title"), "reason": reason})
-        
-        target_urls = list(set(valid_urls))[:2]
-        
-        if not target_urls:
-             return {"error": "No valid URLs found to scrape."}
-
-        print(f"--- 🕷️ SCRAPING URLS: {target_urls} ---")
-        
-        full_page_content = []
-        
-        # 2. Scrape loop
-        for url in target_urls:
-            markdown_text = scrape_with_firecrawl_api(url)
+        full_content = []
+        for url in urls:
+            content = scrape_with_firecrawl_api(url)
+            if content: full_content.append(f"Source: {url}\n{content[:8000]}")
             
-            if markdown_text:
-                full_page_content.append(f"Source: {url}\nContent: {markdown_text[:8000]}")
-            else:
-                print(f"⚠️ Failed to get content for {url}")
-
-        if not full_page_content:
-            return {"error": "Firecrawl failed to scrape any content."}
-
-        combined_content = "\n\n".join(full_page_content)
-
-        # 3. Run LLM Chains
-        research_chain = RESEARCHER_PROMPT | llm
-        research_response = research_chain.invoke({"topic": topic, "search_content": combined_content})
-
-        competitor_chain = COMPETITOR_ANALYSIS_PROMPT | llm
-        competitor_response = competitor_chain.invoke({"topic": topic, "search_content": combined_content})
-
-        print("--- 🕵️ COMPETITOR GAPS IDENTIFIED ---")
-
+        combined = "\n\n".join(full_content)
+        
+        # Run researcher chain (full research)
+        research_res = (RESEARCHER_PROMPT | llm).invoke({"topic": topic, "search_content": combined})
+        comp_res = (COMPETITOR_ANALYSIS_PROMPT | llm).invoke({"topic": topic, "search_content": combined})
+        
+        raw_research_data = research_res.content
+        
+        # 🆕 COMPRESSION STEP
+        print("--- 📊 COMPRESSING RESEARCH ---")
+        compressor = ResearchCompressor()
+        compressed_research = compressor.compress(raw_research_data, topic)
+        
+        # 🆕 CREATE CITATION INDEX
+        citation_idx = CitationIndex(compressed_research)
+        citation_index_str = citation_idx.to_string()
+        
+        print(f"✅ Compressed: {len(raw_research_data)} chars → {len(json.dumps(compressed_research))} chars")
+        
         return {
-            "research_data": research_response.content,
-            "competitor_headers": competitor_response.content, 
-            "sources": source_metadata
+            "research_data": raw_research_data,  # Keep for backward compatibility with fact_checker
+            "raw_research_data": combined,       # Keep for evaluator
+            "compressed_research": compressed_research,  # 🆕
+            "citation_index": citation_index_str,        # 🆕
+            "competitor_headers": comp_res.content
         }
     except Exception as e:
         return {"error": f"Researcher failed: {str(e)}"}
 
+# ---------------------------------------------------------------------------
+# 7. GRAPH NODES - ANALYST
+# ---------------------------------------------------------------------------
+
 def analyst_node(state: AgentState) -> Dict[str, Any]:
-    """Uses Structured Output to guarantee valid Lists."""
-    if state.get("error"): return {}
-    print("--- 📋 ANALYZING & PLANNING (STRUCTURED) ---")
+    print("--- 📋 PLANNING ---")
+    plan = state.get("plan", "basic").lower() 
     
     try:
-        # 🆕 MAGICAL FIX: .with_structured_output()
-        # This forces the LLM to fill our Class structure, preventing parsing errors.
-        structured_llm = llm.with_structured_output(BlogPlan)
-        chain = ANALYST_PROMPT | structured_llm
-        
-        plan: BlogPlan = chain.invoke({
+        chain = ANALYST_PROMPT | llm
+        res = chain.invoke({
             "topic": state["topic"], 
             "research_data": state["research_data"],
-            "competitor_headers": state["competitor_headers"]
+            "competitor_headers": state["competitor_headers"],
+            "plan": plan
         })
         
+        data = extract_json_from_response(res.content)
+        
+        seo_data = {
+            "title": data.get("seo_title", "Blog Post"),
+            "description": data.get("meta_description", ""),
+            "keywords": data.get("target_keywords", [])
+        }
+        
         return {
-            "blog_outline": plan.blog_outline,
-            "sections": plan.sections
+            "blog_outline": data.get("blog_outline", ""),
+            "sections": data.get("sections", []),
+            "seo_metadata": seo_data
         }
     except Exception as e:
         print(f"Analyst Error: {e}")
-        return {"error": f"Analyst failed: {str(e)}"}
+        return {
+            "blog_outline": "Basic Outline", 
+            "sections": ["Introduction", "Key Concepts", "Conclusion"]
+        }
+
+# ---------------------------------------------------------------------------
+# 8. GRAPH NODES - WRITER (WITH CITATION INDEX)
+# ---------------------------------------------------------------------------
 
 def writer_node(state: AgentState) -> Dict[str, Any]:
-    """Recursive Writer: Writes section by section."""
-    if state.get("error"): return {}
-    print("--- ✍️ RECURSIVE WRITING START ---")
+    print("--- ✍️ WRITING ---")
     
-    # 1. Handle Feedback/Rewrite Mode
     feedback = state.get("quality_evaluation", {}).get("tier3", {}).get("feedback", "")
     if feedback and state.get("final_blog_post"):
-        print("--- 🔄 REWRITING BASED ON FEEDBACK ---")
-        prompt = f"Rewrite this blog based on feedback: {feedback}\n\nORIGINAL BLOG: {state['final_blog_post']}"
-        res = llm.invoke(prompt)
+        print("--- 🔄 REWRITING ---")
+        res = llm.invoke(f"Rewrite based on: {feedback}\n\n{state['final_blog_post']}")
         return {"final_blog_post": res.content}
 
-    # 2. Get Sections
-    raw_sections = state.get("sections", [])
-    if not raw_sections:
-        return {"error": "No sections found. Analyst failed."}
-
-    # 🆕 SANITIZATION STEP: Deduplicate and Clean
-    # This removes duplicates while keeping the order
-    seen = set()
-    cleaned_sections = []
-    for s in raw_sections:
-        s_clean = s.strip()
-        if s_clean and s_clean not in seen:
-            cleaned_sections.append(s_clean)
-            seen.add(s_clean)
-
-    print(f"--- 🧹 Sections Cleaned: Reduced from {len(raw_sections)} to {len(cleaned_sections)} ---")
-
-    research_data = state.get("research_data", "")
-    topic = state.get("topic", "")
+    sections = state.get("sections", [])
+    if not sections: return {"error": "No sections to write"}
     
+    clean_sections = list(dict.fromkeys([s for s in sections if s]))
     full_content = []
     
-    # WRITING LOOP (Using cleaned_sections)
-    for i, section_title in enumerate(cleaned_sections):
-        print(f"   ✍️ Writing Section {i+1}/{len(cleaned_sections)}: {section_title}...")
-        
-        # Keep context reasonable (last 1000 chars) to prevent token overflow
-        previous_context = full_content[-1][-2000:] if full_content else "Start of the article."
+    # 🆕 Use citation_index if available, fallback to research_data
+    citation_index = state.get("citation_index", "")
+    research_data = state.get("research_data", "")
+    
+    for i, title in enumerate(clean_sections):
+        print(f"   ✍️ Section {i+1}/{len(clean_sections)}: {title}")
+        prev = full_content[-1][-1000:] if full_content else ""
         
         chain = WRITER_PROMPT | llm
+        
+        # 🆕 Use citation_index if available
+        data_to_pass = citation_index if citation_index else research_data
+        
         res = chain.invoke({
-            "topic": topic,
-            "section_title": section_title,
-            "previous_content": previous_context,
-            "research_data": research_data
+            "topic": state["topic"],
+            "section_title": title,
+            "previous_content": prev,
+            "research_data": data_to_pass,  # 🆕 Can be citation_index or research_data
+            "tone": state.get("tone", "Professional"),
+            "confidence_level": "High"
         })
         
-        section_content = res.content
-        
-        # Ensure Header exists
-        if f"# {section_title}" not in section_content and f"## {section_title}" not in section_content:
-            section_content = f"## {section_title}\n\n{section_content}"
-            
-        full_content.append(section_content)
+        text = res.content
+        if f"## {title}" not in text: text = f"## {title}\n\n{text}"
+        full_content.append(text)
 
-    print("--- ✍️ WRITING COMPLETE ---")
     return {"final_blog_post": "\n\n".join(full_content)}
 
+# ---------------------------------------------------------------------------
+# 9. GRAPH NODES - FACT CHECKER
+# ---------------------------------------------------------------------------
+
 def fact_checker_node(state: AgentState) -> Dict[str, Any]:
-    if state.get("error"): return {}
-    print("--- 🔍 FACT-CHECKING ---")
+    print("--- 🔍 FACT CHECKING ---")
     try:
+        # 🆕 Try to use compressed research, fallback to raw
+        research = state.get("raw_research_data") or state.get("research_data")
+        
+        # If we have compressed research, convert to string for fact-checker
+        if state.get("compressed_research"):
+            research = json.dumps(state.get("compressed_research"), indent=2)
+        
         chain = FACT_CHECKER_PROMPT | llm
         res = chain.invoke({
             "topic": state["topic"],
-            "research_data": state["research_data"],
-            "blog_post": state["final_blog_post"],
+            "research_data": research,
+            "blog_post": state["final_blog_post"]
         })
         return {"fact_check_report": res.content}
     except Exception as e:
-        return {"error": f"Fact-checker failed: {str(e)}"}
+        return {"error": f"Fact check failed: {str(e)}"}
+
+# ---------------------------------------------------------------------------
+# 10. GRAPH NODES - IMAGE GENERATOR (YOUR VERSION)
+# ---------------------------------------------------------------------------
+
+def image_generator_node(state: AgentState) -> Dict[str, Any]:
+    print("--- 🎨 GENERATING IMAGE (FLUX.1) ---")
+    
+    topic = state.get("topic", "")
+    hf_token = os.getenv("HF_TOKEN")
+    
+    if not hf_token:
+        print("   ⚠️ No HF_TOKEN found. Skipping image.")
+        return {"image_path": None}
+
+    try:
+        # Initialize Client
+        client = InferenceClient("black-forest-labs/FLUX.1-schnell", token=hf_token)
+        
+        # Generate Prompt using LLM
+        prompt_request = f"""
+        Create a detailed, artistic image generation prompt for a blog post about: '{topic}'.
+        Style: Modern, Minimalist, Tech-focused, Digital Art. NO TEXT.
+        Output ONLY the prompt.
+        """
+        image_prompt = llm.invoke(prompt_request).content
+        print(f"   🎨 Prompt: {image_prompt[:60]}...")
+
+        # Generate Image
+        image = client.text_to_image(image_prompt)
+        
+        # Save to disk
+        filename = f"blog_image_{uuid.uuid4().hex[:8]}.png"
+        image.save(filename)
+        print(f"   ✅ Image saved: {filename}")
+        
+        return {"image_path": filename}
+
+    except Exception as e:
+        print(f"   ⚠️ Image Gen Failed: {e}")
+        return {"image_path": None}

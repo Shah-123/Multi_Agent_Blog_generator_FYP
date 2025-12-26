@@ -1,33 +1,25 @@
-import json
 import uuid
-import asyncio
-from fastapi import FastAPI, HTTPException, Security, Depends, BackgroundTasks
+import os
+import time
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+from threading import Thread
+
+from fastapi import FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
-
-# --- INTERNAL IMPORTS ---
-from main import build_graph, TopicValidator
-from database import SessionLocal, BlogRecord, init_db
+from pydantic import BaseModel
 from dotenv import load_dotenv
-import os 
+
+# Import your backend logic
+from main import build_graph
+from validators import TopicValidator
+
+# 1. SETUP
 load_dotenv()
+app = FastAPI(title="AI Content Factory Pro", version="2.0.0")
 
-# Initialize database on startup
-init_db()
-
-app = FastAPI(
-    title="AI Content Factory Pro",
-    description="Enterprise Multi-Agent Blog Generation with Background Task Support.",
-    version="2.0.0"
-)
-
-
-
-
-# ADD THIS IMMEDIATELY AFTER app = FastAPI()
+# CORS (Allow Frontend to connect)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,128 +28,156 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# All your @app.get() and @app.post() routes go AFTER this
-
-# ---------------------------------------------------------------------------
-# SECURITY & DB DEPENDENCIES
-# ---------------------------------------------------------------------------
+# Security
 API_KEY = os.getenv("API_KEY")
-api_key_header = APIKeyHeader(name="X-API-KEY")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 async def validate_api_key(key: str = Security(api_key_header)):
+    # If no API key set in env, allow access (for testing)
+    if not API_KEY:
+        return "dev-mode"
     if key != API_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized API Key")
+        raise HTTPException(status_code=403, detail="Invalid API Key")
     return key
 
+# IN-MEMORY DATABASE (Resets when you restart server)
+# In production, replace this with Supabase
+jobs_db: Dict[str, Dict[str, Any]] = {}
+
 # ---------------------------------------------------------------------------
-# MODELS
+# DATA MODELS
 # ---------------------------------------------------------------------------
+
 class BlogRequest(BaseModel):
-    topic: str = Field(..., example="The impact of AI on software engineering")
+    topic: str
+    tone: str = "Professional"
+    plan: str = "premium" # basic or premium
+
+class JobResponse(BaseModel):
+    job_id: str
 
 # ---------------------------------------------------------------------------
-# BACKGROUND WORKER (The "Task Engine")
+# WORKFLOW RUNNER (The Background Worker)
 # ---------------------------------------------------------------------------
-def run_blog_workflow(blog_id: str, topic: str):
-    """Heavy AI logic running in the background."""
-    # We create a new DB session for the background thread
-    db = SessionLocal()
+
+def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
+    """Run the Agent in a background thread."""
+    print(f"🚀 [Job {job_id}] Started processing: {topic}")
+    
     try:
-        # 1. Run the Graph
-        graph = build_graph()
-        final_state = graph.invoke({
-            "topic": topic,
-            "iteration_count": 0,
-            "sources": [],
-            "research_data": "",
-            "blog_outline": "",
-            "final_blog_post": "",
-            "fact_check_report": ""
-        })
-
-        # 2. Extract results
-        eval_data = final_state.get("quality_evaluation", {})
+        # 1. Update Status to 'Processing'
+        jobs_db[job_id]["status"] = "PROCESSING"
+        jobs_db[job_id]["stage"] = "Agent is working..."
         
-        # 3. Update Database
-        blog = db.query(BlogRecord).filter(BlogRecord.id == blog_id).first()
-        if blog:
-            blog.content = final_state.get("final_blog_post")
-            blog.score = eval_data.get("final_score")
-            blog.verdict = eval_data.get("verdict")
-            blog.fact_check = str(eval_data.get("tier2", {}).get("report", ""))
-            blog.status = "COMPLETED"
-            db.commit()
-            print(f"✅ Blog {blog_id} completed successfully.")
+        # 2. Initialize State (Must match your AgentState definition)
+        initial_state = {
+            "topic": topic,
+            "tone": tone,
+            "plan": plan,
+            "iteration_count": 0,
+            "error": None,
+            "sources": [],
+            
+            # Data Containers
+            "research_data": None,      # Structured object
+            "raw_research_data": "",    # String fallback
+            "competitor_headers": "",
+            "blog_outline": None,
+            "sections": [],
+            "seo_metadata": {},
+            "final_blog_post": "",
+            "fact_check_report": None,
+            "image_path": ""
+        }
+        
+        # 3. Build Graph
+        app_graph = build_graph()
+        
+        # 4. RUN THE AGENT (Only Once!)
+        # We use .invoke() for stability.
+        final_output = app_graph.invoke(initial_state)
+        
+        # 5. Handle Failure inside Graph
+        if final_output.get("error"):
+            raise Exception(final_output["error"])
+
+        # 6. Extract Results
+        # Handle Quality Score (Extract form Pydantic or Dict)
+        quality_data = final_output.get("quality_evaluation", {})
+        score = quality_data.get("final_score", 0) if isinstance(quality_data, dict) else 0
+        
+        # Handle SEO
+        seo = final_output.get("seo_metadata", {})
+        
+        # Handle Image
+        img = final_output.get("image_path")
+
+        # 7. Save to 'Database'
+        jobs_db[job_id].update({
+            "status": "COMPLETED",
+            "stage": "Finished",
+            "content": final_output.get("final_blog_post", ""),
+            "quality_score": score,
+            "seo_metadata": seo,
+            "image_path": img,
+            "completed_at": datetime.utcnow().isoformat() + "Z"
+        })
+        print(f"✅ [Job {job_id}] Finished Successfully")
 
     except Exception as e:
-        print(f"❌ Background Task Error: {str(e)}")
-        blog = db.query(BlogRecord).filter(BlogRecord.id == blog_id).first()
-        if blog:
-            blog.status = f"FAILED: {str(e)}"
-            db.commit()
-    finally:
-        db.close()
+        print(f"❌ [Job {job_id}] Failed: {e}")
+        jobs_db[job_id].update({
+            "status": "FAILED",
+            "stage": "Error occurred",
+            "error_msg": str(e)
+        })
 
 # ---------------------------------------------------------------------------
-# ENDPOINTS
+# API ENDPOINTS
 # ---------------------------------------------------------------------------
 
-@app.post("/generate-async", tags=["Generation"])
-async def generate_async_blog(
-    request: BlogRequest, 
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    api_key: str = Depends(validate_api_key)
+@app.get("/")
+async def root():
+    return {"message": "AI Blog Factory API is Running 🚀"}
+
+@app.post("/generate", response_model=JobResponse)
+async def start_generation(
+    req: BlogRequest, 
+    key: str = Security(validate_api_key)
 ):
-    """
-    Starts a generation task and returns a Job ID immediately.
-    No waiting for the AI.
-    """
-    # 1. Pre-Gatekeeper check (fast)
-    validator = TopicValidator()
-    validation = validator.validate(request.topic)
-    if not validation["valid"]:
-        raise HTTPException(status_code=400, detail=validation["reason"])
-
-    # 2. Create Job ID and Pending Record
-    blog_id = str(uuid.uuid4())
-    new_blog = BlogRecord(id=blog_id, topic=request.topic, status="PENDING")
-    db.add(new_blog)
-    db.commit()
-
-    # 3. Queue the background task
-    background_tasks.add_task(run_blog_workflow, blog_id, request.topic)
-
-    return {
-        "status": "Task Started",
-        "job_id": blog_id,
-        "check_status_at": f"/status/{blog_id}"
-    }
-
-@app.get("/status/{job_id}", tags=["Monitoring"])
-def get_job_status(job_id: str, db: Session = Depends(get_db), api_key: str = Depends(validate_api_key)):
-    """Check the status and get the result of a specific job."""
-    blog = db.query(BlogRecord).filter(BlogRecord.id == job_id).first()
-    if not blog:
-        raise HTTPException(status_code=404, detail="Job ID not found")
+    """Endpoint for UI to start a blog generation."""
     
-    return {
-        "id": blog.id,
-        "topic": blog.topic,
-        "status": blog.status,
-        "quality_score": blog.score,
-        "created_at": blog.created_at,
-        "content": blog.content if blog.status == "COMPLETED" else None
-    }
+    # 1. Validate Input
+    validator = TopicValidator()
+    check = validator.validate(req.topic)
+    if not check["valid"]:
+        raise HTTPException(status_code=400, detail=check["reason"])
 
-@app.get("/history", tags=["Management"])
-def get_history(db: Session = Depends(get_db), api_key: str = Depends(validate_api_key)):
-    """List all previous generations."""
-    return db.query(BlogRecord).order_by(BlogRecord.created_at.desc()).all()
+    # 2. Create Job ID
+    job_id = str(uuid.uuid4())
+    
+    # 3. Store Initial Record
+    jobs_db[job_id] = {
+        "id": job_id,
+        "topic": req.topic,
+        "tone": req.tone,
+        "plan": req.plan,
+        "status": "PENDING",
+        "stage": "Queued",
+        "created_at": datetime.utcnow().isoformat() + "Z"
+    }
+    
+    # 4. Start Background Thread
+    # We use Threading because LangGraph is synchronous code running inside Async FastAPI
+    thread = Thread(target=run_workflow_sync, args=(job_id, req.topic, req.tone, req.plan))
+    thread.start()
+    
+    return {"job_id": job_id}
+
+@app.get("/status/{job_id}")
+async def check_status(job_id: str, key: str = Security(validate_api_key)):
+    """Endpoint for UI to poll for results."""
+    job = jobs_db.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
