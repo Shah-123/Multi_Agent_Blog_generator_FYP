@@ -137,3 +137,4 @@ webvtt-py==0.5.1
 xxhash==3.6.0
 yarl==1.22.0
 zstandard==0.25.0
+huggingface-hub==0.18.1
