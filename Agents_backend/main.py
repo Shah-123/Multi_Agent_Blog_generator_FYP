@@ -6,12 +6,14 @@ load_dotenv()
 
 from langgraph.graph import StateGraph, END
 from Graph.state import AgentState
+# Correct Imports
 from Graph.nodes import (
     researcher_node, 
     analyst_node, 
     writer_node, 
     fact_checker_node,
-    image_generator_node
+    image_generator_node,
+    social_media_node 
 )
 from validators import TopicValidator, realistic_evaluation
 
@@ -60,17 +62,19 @@ def build_graph():
     workflow.add_node("writer", writer_node)
     workflow.add_node("fact_checker", fact_checker_node)
     workflow.add_node("image_gen", image_generator_node)
+    workflow.add_node("social_media", social_media_node)
     workflow.add_node("evaluator", evaluator_node)
     
     # Set Entry Point
     workflow.set_entry_point("researcher")
     
-    # Edges
+    # Linear Sequence (Safe & Stable)
     workflow.add_edge("researcher", "analyst")
     workflow.add_edge("analyst", "writer")
     workflow.add_edge("writer", "fact_checker")
     workflow.add_edge("fact_checker", "image_gen") 
-    workflow.add_edge("image_gen", "evaluator") 
+    workflow.add_edge("image_gen", "social_media") 
+    workflow.add_edge("social_media", "evaluator") 
     
     # Conditional Edge
     workflow.add_conditional_edges(
@@ -104,7 +108,7 @@ def run_app():
         print(f"❌ Topic Rejected: {validation['reason']}")
         return
 
-    # 🆕 Add compressed_research and citation_index to initial_state
+    # Initialize State
     initial_state = {
         "topic": topic,
         "tone": tone,
@@ -112,17 +116,18 @@ def run_app():
         "iteration_count": 0,
         "error": None,
         "sources": [],
-        "research_data": "",
+        "research_data": None,
         "raw_research_data": "",
-        "compressed_research": {},      # 🆕
-        "citation_index": "",            # 🆕
         "competitor_headers": "",
-        "blog_outline": "",
+        "blog_outline": None,
         "sections": [],
         "seo_metadata": {}, 
         "final_blog_post": "",
-        "fact_check_report": "",
-        "image_path": ""
+        "fact_check_report": None,
+        "image_path": "",
+        "linkedin_post": "",
+        "youtube_script": "",
+        "facebook_post": ""
     }
 
     print(f"🚀 STARTING WORKFLOW (Topic: {topic}, Tone: {tone}, Plan: {plan.upper()})...")
@@ -152,6 +157,18 @@ def run_app():
             print(f"✅ Saved at: {os.path.abspath(img_path)}")
         else:
             print("❌ Image generation failed.")
+
+        print("\n" + "="*80)
+        print("📱 SOCIAL MEDIA PACK")
+        print("="*80)
+        print("--- LINKEDIN ---")
+        print(final_output.get("linkedin_post", "") + "...\n")
+        print("--- LINKEDIN ---")
+        
+        print(final_output.get('youtube_script', "") + "...\n")
+        print("--- LINKEDIN ---")
+        
+        print(final_output.get('facebook_post', "") + "...\n")
 
         print("\n" + "="*80)
         eval_data = final_output.get("quality_evaluation", {})

@@ -1,29 +1,33 @@
 from typing import TypedDict, List, Optional, Any
+from Graph.structured_data import ResearchData, BlogOutline, WrittenBlog, FactCheckReport
 
 class AgentState(TypedDict):
+    # ... existing fields ...
     topic: str
     tone: str
-    # Plan specification
-    plan: str 
-    # Existing fields (keep for backward compatibility)
-    research_data: str
-    raw_research_data: str
+    plan: str
+    
+    # ... existing structured data ...
+    research_data: Optional[ResearchData]
+    blog_outline: Optional[BlogOutline]
+    written_blog: Optional[WrittenBlog]
+    fact_check_report: Optional[FactCheckReport]
+    
+    # ... existing raw data ...
+    raw_research_data: str 
     competitor_headers: str
-    sources: List[dict]
-    sections: List[str] 
-    blog_outline: str
-    # 🆕 NEW: Compressed research (Token leak fix)
-    compressed_research: dict
-    
-    # 🆕 NEW: Citation index for writer (Token leak fix)
-    citation_index: str
-    
-    # SEO metadata
-    seo_metadata: dict 
+    final_blog_post: str
+    seo_metadata: dict
     image_path: str
     
-    final_blog_post: str
-    fact_check_report: str
-    quality_evaluation: Optional[Any] 
-    iteration_count: int              
+    # 🆕 NEW SOCIAL MEDIA FIELDS
+    linkedin_post: str
+    youtube_script: str
+    facebook_post: str
+    
+    # ... existing control fields ...
+    iteration_count: int
     error: Optional[str]
+    sections: List[str]
+    sources: List[dict]
+    quality_evaluation: Optional[Any]

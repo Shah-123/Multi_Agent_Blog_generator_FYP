@@ -19,7 +19,10 @@ from Graph.templates import (
     ANALYST_PROMPT,
     WRITER_PROMPT,
     FACT_CHECKER_PROMPT,
-    COMPETITOR_ANALYSIS_PROMPT
+    COMPETITOR_ANALYSIS_PROMPT,
+    LINKEDIN_PROMPT,
+    VIDEO_SCRIPT_PROMPT,
+    FACEBOOK_PROMPT
 )
 
 # ---------------------------------------------------------------------------
@@ -356,10 +359,11 @@ def image_generator_node(state: AgentState) -> Dict[str, Any]:
         return {"image_path": None}
 
     try:
-        # Initialize Client
-        client = InferenceClient("black-forest-labs/FLUX.1-schnell", token=hf_token)
+        # 1. Initialize Client (Handles URL/Routing automatically)
+        # Use the specific model for better results
+        client = InferenceClient("Tongyi-MAI/Z-Image-Turbo", token=hf_token)
         
-        # Generate Prompt using LLM
+        # 2. Generate Prompt using LLM
         prompt_request = f"""
         Create a detailed, artistic image generation prompt for a blog post about: '{topic}'.
         Style: Modern, Minimalist, Tech-focused, Digital Art. NO TEXT.
@@ -368,16 +372,66 @@ def image_generator_node(state: AgentState) -> Dict[str, Any]:
         image_prompt = llm.invoke(prompt_request).content
         print(f"   🎨 Prompt: {image_prompt[:60]}...")
 
-        # Generate Image
-        image = client.text_to_image(image_prompt)
+        # 3. Generate Image
+        # Call the correct method for image generation
+        image = client.image(prompt_request) 
         
-        # Save to disk
+        # 4. Save to disk
         filename = f"blog_image_{uuid.uuid4().hex[:8]}.png"
         image.save(filename)
-        print(f"   ✅ Image saved: {filename}")
+        print(f"   ✅ Image Saved: {filename}")
         
         return {"image_path": filename}
 
     except Exception as e:
         print(f"   ⚠️ Image Gen Failed: {e}")
         return {"image_path": None}
+def social_media_node(state: AgentState) -> Dict[str, Any]:
+    print("--- 📱 GENERATING SOCIAL MEDIA CONTENT ---")
+    
+    # 1. Gather Inputs
+    blog_post = state.get("final_blog_post", "")
+    seo = state.get("seo_metadata", {})
+    
+    # Fallbacks if SEO data missing
+    title = seo.get("title", state["topic"])
+    description = seo.get("description", "A comprehensive guide.")
+    
+    if not blog_post:
+        return {"error": "No blog post to repurpose."}
+
+    try:
+        # 2. Run Chains (Parallel execution would be faster, but sequential is safer for now)
+        
+        # LinkedIn
+        print("   💼 Generating LinkedIn Post...")
+        linkedin_res = (LINKEDIN_PROMPT | llm).invoke({
+            "title": title,
+            "description": description,
+            "blog_post": blog_post
+        })
+        
+        # YouTube
+        print("   🎥 Generating YouTube Script...")
+        youtube_res = (VIDEO_SCRIPT_PROMPT | llm).invoke({
+            "title": title,
+            "blog_post": blog_post
+        })
+        
+        # Facebook
+        print("   📘 Generating Facebook Strategy...")
+        facebook_res = (FACEBOOK_PROMPT | llm).invoke({
+            "title": title,
+            "description": description,
+            "blog_post": blog_post
+        })
+
+        return {
+            "linkedin_post": linkedin_res.content,
+            "youtube_script": youtube_res.content,
+            "facebook_post": facebook_res.content
+        }
+
+    except Exception as e:
+        print(f"Social Media Node Failed: {e}")
+        return {"error": f"Social Gen Failed: {str(e)}"}

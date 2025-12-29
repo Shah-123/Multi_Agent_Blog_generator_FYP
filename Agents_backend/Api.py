@@ -10,6 +10,7 @@ from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import uvicorn
 
 # Import your backend logic
 from main import build_graph
@@ -22,7 +23,7 @@ app = FastAPI(title="AI Content Factory Pro", version="2.0.0")
 # CORS (Allow Frontend to connect)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8000 "],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,7 +42,6 @@ async def validate_api_key(key: str = Security(api_key_header)):
     return key
 
 # IN-MEMORY DATABASE (Resets when you restart server)
-# In production, replace this with Supabase
 jobs_db: Dict[str, Dict[str, Any]] = {}
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
         jobs_db[job_id]["status"] = "PROCESSING"
         jobs_db[job_id]["stage"] = "Agent is working..."
         
-        # 2. Initialize State (Must match your AgentState definition)
+        # 2. Initialize State (Updated to match your latest backend)
         initial_state = {
             "topic": topic,
             "tone": tone,
@@ -79,22 +79,26 @@ def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
             "sources": [],
             
             # Data Containers
-            "research_data": None,      # Structured object
-            "raw_research_data": "",    # String fallback
+            "research_data": None,      
+            "raw_research_data": "",    
             "competitor_headers": "",
             "blog_outline": None,
             "sections": [],
             "seo_metadata": {},
             "final_blog_post": "",
             "fact_check_report": None,
-            "image_path": ""
+            "image_path": "",
+            
+            # 🆕 Social Media Fields
+            "linkedin_post": "",
+            "youtube_script": "",
+            "facebook_post": ""
         }
         
         # 3. Build Graph
         app_graph = build_graph()
         
         # 4. RUN THE AGENT (Only Once!)
-        # We use .invoke() for stability.
         final_output = app_graph.invoke(initial_state)
         
         # 5. Handle Failure inside Graph
@@ -102,24 +106,25 @@ def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
             raise Exception(final_output["error"])
 
         # 6. Extract Results
-        # Handle Quality Score (Extract form Pydantic or Dict)
         quality_data = final_output.get("quality_evaluation", {})
         score = quality_data.get("final_score", 0) if isinstance(quality_data, dict) else 0
         
-        # Handle SEO
-        seo = final_output.get("seo_metadata", {})
-        
-        # Handle Image
-        img = final_output.get("image_path")
-
         # 7. Save to 'Database'
         jobs_db[job_id].update({
             "status": "COMPLETED",
             "stage": "Finished",
             "content": final_output.get("final_blog_post", ""),
             "quality_score": score,
-            "seo_metadata": seo,
-            "image_path": img,
+            "seo_metadata": final_output.get("seo_metadata", {}),
+            "image_path": final_output.get("image_path", ""),
+            
+            # 🆕 Return Social Media Pack
+            "social_media": {
+                "linkedin": final_output.get("linkedin_post", ""),
+                "youtube": final_output.get("youtube_script", ""),
+                "facebook": final_output.get("facebook_post", "")
+            },
+            
             "completed_at": datetime.utcnow().isoformat() + "Z"
         })
         print(f"✅ [Job {job_id}] Finished Successfully")
@@ -168,7 +173,6 @@ async def start_generation(
     }
     
     # 4. Start Background Thread
-    # We use Threading because LangGraph is synchronous code running inside Async FastAPI
     thread = Thread(target=run_workflow_sync, args=(job_id, req.topic, req.tone, req.plan))
     thread.start()
     
@@ -182,14 +186,9 @@ async def check_status(job_id: str, key: str = Security(validate_api_key)):
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
-
-
-import uvicorn
-
 if __name__ == "__main__":
     uvicorn.run(
         "Api:app",
-        # host="0.0.0.0",
+        host="0.0.0.0",
         port=8000,
-        reload=True
-    )
+        reload=True)

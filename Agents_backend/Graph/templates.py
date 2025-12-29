@@ -484,3 +484,399 @@ ERROR HANDLING:
 """,
     input_variables=["topic", "research_data", "blog_post"],
 )
+
+
+
+
+
+
+
+
+
+
+from langchain_core.prompts import PromptTemplate
+
+# ============================================================================
+# 1. LINKEDIN PROMPT (IMPROVED 2025 VERSION)
+# ============================================================================
+
+LINKEDIN_PROMPT = PromptTemplate(
+    template="""Convert this blog post into a viral LinkedIn post.
+
+BLOG TITLE: {title}
+BLOG SUMMARY: {description}
+BLOG CONTENT: {blog_post}
+
+YOUR TASK:
+Create a LinkedIn post optimized for 2025 algorithm (max engagement, shareability).
+
+CRITICAL RULES:
+
+1. HOOK (FIRST 140 CHARACTERS) - This determines if people click "See More":
+   Choose ONE approach (mix different ones each time):
+   - CURIOUS GAP: "Did you know [specific stat]% of professionals miss this?"
+   - BOLD CLAIM: "You don't need [years/experience] to achieve [outcome]..."
+   - SURPRISING STAT: "[Specific statistic from blog] — and why it matters..."
+   - CONTRARIAN: "Everyone says [common belief], but the truth is..."
+   
+   Example hooks:
+   ✓ "Did you know 73% of healthcare professionals struggle with this one thing?"
+   ✓ "You don't need 10 years of experience to implement AI in your workflow..."
+   ✓ "Over 70% of companies who tried this saw immediate results..."
+
+2. LENGTH & CHARACTER COUNT:
+   - Target: 1,800-2,100 characters (NOT words - this is MUCH longer)
+   - Why: LinkedIn algorithm favors detailed, comprehensive posts
+   - Include: 3-4 substantial paragraphs with depth
+   
+3. FORMATTING (Critical for readability):
+   - Keep paragraphs SHORT (max 2-3 sentences per paragraph)
+   - Use LINE BREAKS between ideas (press Enter twice)
+   - Bold key terms: **keyword** (use sparingly, max 3-4 per post)
+   - Structure: Hook → Problem Statement → Solution → Takeaways
+
+4. BODY CONTENT (Structured around 3-5 key points):
+   Each point should be:
+   - TITLE: One compelling statement
+   - EXPLANATION: 1-2 sentences of detail
+   - EXAMPLE/DATA: Specific stat, example, or case from blog
+   
+   Format:
+   **Point 1: [Title]**
+   [Explanation + example/stat]
+   
+   **Point 2: [Title]**
+   [Explanation + example/stat]
+
+5. EMOJI USAGE (Increases engagement 25%):
+   - Use 1-3 strategic emojis total (NOT excessive)
+   - Place them naturally: at section breaks or emphasis points
+   - Recommended: 💡 (insight), 🎯 (goal), 📈 (growth), ✅ (success), 🚀 (momentum)
+   - NOT: 😂 😍 🤩 (too casual for professional LinkedIn)
+
+6. CALL-TO-ACTION (CTA) - SPECIFIC, not generic:
+   Choose from templates below (vary each time):
+   
+   ✓ Question-based: "What's the biggest challenge YOU face with [topic]? Comment below 👇"
+   ✓ Experience-based: "Have you tried this approach? What were your results? Let's discuss"
+   ✓ Opinion-based: "Do you agree or disagree? I'd love to hear your perspective in comments"
+   ✓ Contribution-based: "What would YOU add to this list? Share your insights below"
+   ✓ Engagement hook: "Save this for later and come back when [situation]. You'll thank me"
+   
+   ✗ NEVER: "What do you think?" (too generic, 50% lower engagement)
+   ✗ NEVER: "Feel free to comment" (too passive)
+
+7. HASHTAG STRATEGY (5 hashtags - mixed):
+   Pattern: 1 Branded + 2 Industry-Specific + 2 Trending
+   
+   Example:
+   #AI #Healthcare #MachineLearning #LinkedInJobs #FutureOfWork
+   
+   Rules:
+   - All hashtags should appear SEPARATELY (each on own line or space-separated)
+   - Mix popular (#AI) with niche (#HealthcareIT)
+   - Include 1-2 trending hashtags from your industry
+   - Avoid spam hashtags
+
+8. OPTIONAL: Mention (if relevant):
+   - Tag 1-2 relevant people/organizations (if authentic)
+   - NOT spammy, only if genuinely relevant
+
+TONE:
+- Authoritative but approachable
+- Thought leadership (teach something valuable)
+- Professional yet conversational
+- Inspiring without being preachy
+
+OUTPUT STRUCTURE (FINAL):
+
+[HOOK LINE]
+
+[MAIN BODY - 3-4 paragraphs with point breakdowns]
+
+[EMOJI-based emphasis line]
+
+[CTA - SPECIFIC question or call-to-action]
+
+[HASHTAGS - each on separate line or space-separated]
+
+---
+CHARACTER COUNT TARGET: 1,800-2,100 characters
+ENGAGEMENT PREDICTION: High (if hook + CTA are specific)
+""",
+    input_variables=["title", "description", "blog_post"],
+)
+
+# ============================================================================
+# 2. VIDEO SCRIPT PROMPT (IMPROVED 2025 VERSION)
+# ============================================================================
+
+VIDEO_SCRIPT_PROMPT = PromptTemplate(
+    template="""Write a YouTube video script for MAXIMUM engagement.
+
+BLOG TITLE: {title}
+BLOG CONTENT: {blog_post}
+
+OPTIMAL LENGTH TARGET: 6-12 minutes (this is where YouTube algorithm peaks)
+
+CRITICAL STRUCTURE (Non-negotiable order):
+
+═══════════════════════════════════════════════════════════════
+
+[0:00-0:15 sec] HOOK + PROMISE:
+- First 3 seconds: GRAB attention (ask question, surprising statement)
+- Next 5 seconds: Establish BENEFIT ("By the end of this video, you'll...")
+- Last 5 seconds: Create curiosity loop ("Stay tuned for #1, which might surprise you")
+
+Example:
+"Over 70% of professionals are doing this wrong. In the next 10 minutes, you'll 
+learn the 5 mistakes that cost them months of work — and how to fix them immediately."
+
+═══════════════════════════════════════════════════════════════
+
+[0:15-0:45 sec] INTRODUCTION + CHANNEL BUILD:
+- Introduce yourself (credibility)
+- Brief channel intro if viewer is new
+- Why they should listen to you
+- Subscribe CTA (soft)
+
+Example:
+"Hi, I'm [Name]. I've worked with 100+ companies to implement this exact approach. 
+If you're interested in [topic], hit subscribe to see more actionable tips."
+
+═══════════════════════════════════════════════════════════════
+
+[0:45 onwards] MAIN CONTENT - POINT-BY-POINT:
+
+Format for EACH point:
+**[POINT NUMBER]: [Compelling Title]**
+
+[Explanation: 2-3 sentences setting up the concept]
+
+[Real example or analogy]
+
+[How-to or action step]
+
+[Transition to next point]
+
+CRITICAL: If you say "5 mistakes" you MUST deliver exactly 5. No shortcuts.
+This is called LOOP CLOSURE - essential for viewer trust.
+
+═══════════════════════════════════════════════════════════════
+
+[BONUS SECTION] (Between main content and takeaways):
+- This is CRITICAL for retention
+- Over-deliver with extra valuable tip
+- Example: "Bonus: This one technique saved my team 40 hours/month"
+- Keeps viewers watching and increases watch-time metric
+
+═══════════════════════════════════════════════════════════════
+
+[TAKEAWAYS SECTION] (Before CTA):
+Recap the 3-5 key takeaways:
+- Make them memorable
+- Format as bullets or numbered
+- Keep each under 20 words
+
+═══════════════════════════════════════════════════════════════
+
+[CLOSING + CTA] (Last 30 seconds):
+- Strong call-to-action: "Subscribe for more videos like this"
+- Engagement hook: "What was YOUR biggest takeaway? Comment below"
+- Next video teaser: "Next week, we're covering..."
+- End screen: "Click here to watch [related video]"
+
+═══════════════════════════════════════════════════════════════
+
+VISUAL CUES & TIMECODES (Include specific timing):
+
+Format:
+[0:00-0:05] [NARRATOR: "Hook text here"]
+[0:05] [SHOW SCREEN: Intro title graphic]
+[0:15] [B-ROLL: Office setting or relevant footage]
+[0:30] [SLIDE: "Key Point #1"]
+[0:35] [NARRATOR: "First point explanation..."]
+[1:00] [PAUSE 2 seconds - let audience absorb]
+[1:02] [B-ROLL: Change to new footage]
+[1:15] [SLIDE: "Point #2"]
+
+PACING RULES:
+- Never talk for more than 60 seconds without a visual change
+- Include pauses (2-3 sec) for emphasis
+- Change B-ROLL every 45 seconds
+- Include text overlays for key points
+
+═══════════════════════════════════════════════════════════════
+
+DIALOGUE WRITING RULES (for natural sound):
+- Write as if speaking, not writing
+- Use contractions: "I've" not "I have"
+- Keep sentences short (max 15 words)
+- Use conversational filler sparingly: "So..." "Now..." "Here's the thing..."
+- Test: Read aloud - if it sounds awkward, rewrite
+
+═══════════════════════════════════════════════════════════════
+
+TONE: Enthusiastic, Conversational, Educational
+PACING: Fast, Punchy, Keep viewer engaged every 30 seconds
+ATTITUDE: Expert who's eager to share knowledge
+
+FINAL CHECKLIST:
+✓ Hook is compelling (0-15 sec)
+✓ Promise is clear ("You'll learn...")
+✓ All points delivered fully (no shortcuts)
+✓ Loop closure (if you promise 5 things, deliver 5)
+✓ Bonus section included
+✓ Takeaways recap present
+✓ Visual cues with timecodes specified
+✓ CTA is strong
+✓ Total duration: 6-12 minutes
+
+""",
+    input_variables=["title", "blog_post"],
+)
+
+# ============================================================================
+# 3. FACEBOOK PROMPT (IMPROVED 2025 VERSION)
+# ============================================================================
+
+FACEBOOK_PROMPT = PromptTemplate(
+    template="""Convert blog into Facebook strategy (POST + ENGAGEMENT PLAN).
+
+BLOG TITLE: {title}
+BLOG SUMMARY: {description}
+BLOG CONTENT: {blog_post}
+
+TASK: Create a Facebook strategy optimized for 2025 algorithm.
+
+═══════════════════════════════════════════════════════════════
+
+PRIMARY FORMAT DECISION:
+- If topic involves process/tutorial: CREATE VIDEO (15-30 sec)
+- If topic is inspirational/story: CREATE CAROUSEL (5-12 slides)
+- Fallback: High-quality image + compelling text
+
+═══════════════════════════════════════════════════════════════
+
+MAIN POST OPTIONS (Choose ONE approach):
+
+OPTION A - SHORT & SNAPPY (40-80 characters):
+- One punchy line that makes people stop scrolling
+- Add high-quality image or video
+- Quick CTA
+- Use case: Breaking news, quick tips, trending topics
+- Example: "This one technique changed everything. Here's why..."
+
+OPTION B - LONG-FORM STORYTELLING (1,500+ characters):
+- Tell a compelling story (problem → solution → result)
+- Multiple short paragraphs with line breaks
+- Include specific stats/examples from blog
+- Builds emotional connection
+- Use case: Personal stories, detailed guides, case studies
+- Example: "3 years ago, I struggled with [problem]. Then I discovered [solution]..."
+
+REQUIRED ELEMENTS (for both options):
+- Hook in first 1-2 sentences (determine click-through)
+- 1-2 strategic emojis (👍 not 😂 😍)
+- Line breaks for readability
+- Authentic voice (not corporate)
+
+═══════════════════════════════════════════════════════════════
+
+VISUAL STRATEGY:
+BEST: Authentic video or carousel (get 65% more engagement than images)
+GOOD: High-quality custom image (not generic stock photos)
+AVOID: Links-only posts (lowest engagement)
+
+Video specs:
+- Duration: 15-30 seconds
+- Captions: YES (80% watch without sound)
+- Hook: First 3 sec must grab attention
+
+Carousel specs:
+- Slides: 5-12 optimal
+- Each slide: Title + description + CTA
+- Progression: Problem → Solution → Outcome → Action
+
+═══════════════════════════════════════════════════════════════
+
+SPECIFIC CALL-TO-ACTION (CTA) - NOT GENERIC:
+
+✓ DO THIS:
+- "Which of these resonates most with you? React or comment 👇"
+- "Have you tried this? Share your experience in the comments"
+- "What's YOUR biggest challenge here? Let's discuss"
+- "Take our poll: Which approach works for you?" [poll embedded]
+- "Save this post — you'll want to come back when [situation]"
+
+✗ DON'T DO THIS:
+- "Share your thoughts" (too vague)
+- "Feel free to comment" (too passive)
+- "Like and share" (engagement-baiting, Facebook penalizes)
+
+═══════════════════════════════════════════════════════════════
+
+FIRST COMMENT THREAD STRATEGY (Comment 1):
+- Post main content first
+- Immediately reply with thread expansion
+- 3-5 follow-up comments that expand on main points
+- Each comment: 200-300 characters
+- Start engaging immediately (reply to comments within 1 hour)
+
+Structure:
+Comment 1: "[Expanded point #1 with example]"
+Comment 2: "[Expanded point #2 with stat]"
+Comment 3: "[Expanded point #3 with action step]"
+Comment 4 (optional): "[Related resource or tip]"
+Comment 5 (optional): "[Personal story or case study]"
+
+═══════════════════════════════════════════════════════════════
+
+ENGAGEMENT RESPONSE PLAN:
+- Plan to reply to comments within 1 hour
+- Thank people for comments
+- Ask follow-up questions to build conversation
+- Keep replies under 200 characters
+- Aim for 50%+ comment-to-view ratio
+
+═══════════════════════════════════════════════════════════════
+
+OUTPUT FORMAT:
+
+---
+MAIN POST:
+[Hook + Body text or video description]
+
+[1-2 emojis]
+
+[CTA - specific question or call-to-action]
+
+---
+FIRST COMMENT THREAD:
+[Comment 1 expansion]
+[Comment 2 expansion]
+[Comment 3 expansion]
+
+---
+ENGAGEMENT NOTES:
+- Post time: [Suggest optimal time]
+- Expected engagement: [Prediction]
+- Response strategy: [How to handle comments]
+
+---
+
+TONE: Friendly, Conversational, Community-focused, Authentic
+ENGAGEMENT GOAL: Build conversation, not just reach
+VIBE: Like talking to a friend, not a corporate brand
+
+FINAL CHECKLIST:
+✓ Hook grabs attention
+✓ Visual (video/image/carousel) selected
+✓ CTA is specific and inviting
+✓ Thread expansion planned
+✓ Authentic voice (not corporate)
+✓ Engagement strategy noted
+
+""",
+    input_variables=["title", "description", "blog_post"],
+)
