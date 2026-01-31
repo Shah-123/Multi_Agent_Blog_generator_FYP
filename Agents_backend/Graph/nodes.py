@@ -279,43 +279,95 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
     except Exception as e:
         print(f"   ⚠️ Image Generation Failed: {e}")
         return None
-
 def generate_and_place_images(state: State) -> dict:
-    """Generates images and replaces placeholders."""
-    print("--- 🎨 GENERATING IMAGES ---")
+    """
+    SKIPPED: Just saves the markdown file.
+    Uncomment the logic below to re-enable images later.
+    """
+    print("--- ⏭️ SKIPPING IMAGE GENERATION (User Request) ---")
     
     plan = state["plan"]
-    md = state.get("md_with_placeholders") or state["merged_md"]
-    image_specs = state.get("image_specs", []) or []
+    # Use merged_md directly since we aren't replacing placeholders with real images
+    md = state["merged_md"] 
+    
+    # OPTIONAL: Remove the [[IMAGE]] placeholders if you want clean text
+    # md = re.sub(r"\[\[IMAGE_\d+\]\]", "", md)
 
-    # Prepare output directory
-    images_dir = Path("generated_images")
-    images_dir.mkdir(exist_ok=True)
-
-    for spec in image_specs:
-        placeholder = spec["placeholder"]
-        filename = spec["filename"]
-        
-        print(f"   🎨 Generating: {spec['prompt'][:50]}...")
-        
-        # Try generation
-        img_bytes = _generate_image_bytes_google(spec["prompt"])
-        
-        if img_bytes:
-            # Save Image
-            out_path = images_dir / filename
-            out_path.write_bytes(img_bytes)
-            # Link in Markdown
-            img_md = f"![{spec['alt']}](generated_images/{filename})\n*{spec['caption']}*"
-            md = md.replace(placeholder, img_md)
-        else:
-            # Fallback text if generation fails/skipped
-            fallback = f"> *[Image Suggested: {spec['caption']}]*"
-            md = md.replace(placeholder, fallback)
-
-    # Save Final File
     final_filename = f"{_safe_slug(plan.blog_title)}.md"
     Path(final_filename).write_text(md, encoding="utf-8")
     
-    print(f"   ✅ Saved final blog to: {final_filename}")
+    print(f"   ✅ Saved text-only blog to: {final_filename}")
     return {"final": md}
+
+
+
+
+
+def fact_checker_node(state: State) -> dict:
+    """Verifies the final blog content."""
+    print("--- 🕵️ FACT CHECKING ---")
+    
+    # Simple prompt to check consistency
+    prompt = f"""You are a Fact Checker. Verify this blog post.
+    
+    BLOG CONTENT:
+    {state['final'][:10000]}
+    
+    EVIDENCE USED:
+    {[e.url for e in state['evidence']]}
+    
+    TASK:
+    Identify any major hallucinations or claims that contradict common knowledge.
+    Return a brief report.
+    """
+    
+    report = llm.invoke(prompt).content
+    print("   ✅ Fact Check Complete")
+    return {"fact_check_report": report}
+
+# ------------------------------------------------------------------
+# 9. NEW NODE: SOCIAL MEDIA GENERATOR
+# ------------------------------------------------------------------
+def social_media_node(state: State) -> dict:
+    """Generates LinkedIn, YouTube, and Facebook content."""
+    print("--- 📱 GENERATING SOCIAL MEDIA PACK ---")
+    
+    blog_post = state["final"]
+    
+    # 1. LinkedIn
+    linkedin_prompt = f"Create a viral LinkedIn post (max 200 words) based on this blog. Use emojis and bullet points.\n\nBLOG: {blog_post[:4000]}"
+    linkedin = llm.invoke(linkedin_prompt).content
+    
+    # 2. YouTube
+    youtube_prompt = f"Write a 1-minute YouTube Short script based on this blog. Hook -> Value -> CTA.\n\nBLOG: {blog_post[:4000]}"
+    youtube = llm.invoke(youtube_prompt).content
+    
+    # 3. Facebook
+    fb_prompt = f"Write a Facebook post for a general audience based on this blog.\n\nBLOG: {blog_post[:4000]}"
+    facebook = llm.invoke(fb_prompt).content
+    
+    print("   ✅ Social Media Content Generated")
+    
+    return {
+        "linkedin_post": linkedin,
+        "youtube_script": youtube,
+        "facebook_post": facebook
+    }
+
+# ------------------------------------------------------------------
+# 10. NEW NODE: EVALUATOR
+# ------------------------------------------------------------------
+
+from validators import BlogEvaluator
+def evaluator_node(state: State) -> dict:
+    """Scores the blog using your validator logic."""
+    print("--- 📊 EVALUATING QUALITY ---")
+    
+    evaluator = BlogEvaluator()
+    results = evaluator.evaluate(
+        blog_post=state["final"],
+        topic=state["topic"]
+    )
+    
+    print(f"   🏆 Final Score: {results.get('final_score')}/10")
+    return {"quality_evaluation": results}

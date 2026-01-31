@@ -7,68 +7,70 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from langgraph.graph import StateGraph, START, END
-
+from validators import TopicValidator
 # Import NEW State and Nodes (Candidate C Architecture)
 from Graph.state import State
+# ... [Imports] ...
 from Graph.nodes import (
-    router_node, 
-    research_node, 
-    orchestrator_node, 
-    worker_node, 
-    fanout, 
-    merge_content, 
-    decide_images, 
-    generate_and_place_images
+    router_node, research_node, orchestrator_node, worker_node, 
+    fanout, merge_content, decide_images, generate_and_place_images,
+    # Import your new nodes
+    fact_checker_node, social_media_node, evaluator_node
 )
 
-# Keep your Validator (It's good)
-from validators import TopicValidator
-
-# ---------------------------------------------------------------------------
-# GRAPH BUILDER (The Teacher's Architecture)
-# ---------------------------------------------------------------------------
 def build_graph():
-    """Builds the Parallel Map-Reduce Graph."""
-    
-    # 1. Define the Reducer Subgraph (Merge -> Image Plan -> Generate)
+    # 1. Reducer Subgraph (Keep as is, even if image gen is skipped)
     reducer = StateGraph(State)
     reducer.add_node("merge_content", merge_content)
     reducer.add_node("decide_images", decide_images)
     reducer.add_node("generate_and_place_images", generate_and_place_images)
-    
     reducer.add_edge(START, "merge_content")
     reducer.add_edge("merge_content", "decide_images")
     reducer.add_edge("decide_images", "generate_and_place_images")
     reducer.add_edge("generate_and_place_images", END)
 
-    # 2. Define Main Graph
+    # 2. Main Graph
     workflow = StateGraph(State)
     
+    # Add Core Nodes
     workflow.add_node("router", router_node)
     workflow.add_node("research", research_node)
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("worker", worker_node)
     workflow.add_node("reducer", reducer.compile()) 
+    
+    # Add YOUR Feature Nodes
+    workflow.add_node("fact_checker", fact_checker_node)
+    workflow.add_node("social_media", social_media_node)
+    workflow.add_node("evaluator", evaluator_node)
 
-    # 3. Define Edges & Routing
+    # 3. Edges
     workflow.add_edge(START, "router")
     
-    # Logic: If research needed -> Research Node, Else -> Orchestrator
     def route_next(state):
         return "research" if state["needs_research"] else "orchestrator"
         
     workflow.add_conditional_edges("router", route_next)
     workflow.add_edge("research", "orchestrator")
-    
-    # Logic: Fanout to multiple workers in PARALLEL
     workflow.add_conditional_edges("orchestrator", fanout, ["worker"])
-    
-    # Logic: All workers return to Reducer
     workflow.add_edge("worker", "reducer")
-    workflow.add_edge("reducer", END)
+    
+    # --- 🔌 NEW WIRING HERE ---
+    # After Reducer (Images/Merge), go to Fact Check
+    workflow.add_edge("reducer", "fact_checker")
+    
+    # Fact Check -> Social Media
+    workflow.add_edge("fact_checker", "social_media")
+    
+    # Social Media -> Evaluator
+    workflow.add_edge("social_media", "evaluator")
+    
+    # Evaluator -> END
+    workflow.add_edge("evaluator", END)
 
     return workflow.compile()
 
+# ... [Rest of run_app logic] ...
 # ---------------------------------------------------------------------------
 # MAIN RUNNER
 # ---------------------------------------------------------------------------
