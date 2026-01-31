@@ -1,8 +1,7 @@
 import uuid
 import os
-import time
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 from threading import Thread
 
 from fastapi import FastAPI, HTTPException, Security
@@ -12,104 +11,109 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import uvicorn
 
-# Import your backend logic
 from main import build_graph
 from validators import TopicValidator
 
-# 1. SETUP
+# ============================================================================
+# SETUP
+# ============================================================================
 load_dotenv()
-app = FastAPI(title="AI Content Factory Pro", version="2.0.0")
+app = FastAPI(title="AI Content Factory Pro", version="2.1.0")
 
-# CORS (Allow Frontend to connect)
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8000 "],
+    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Security
+# Security (FIXED)
 API_KEY = os.getenv("API_KEY")
+if not API_KEY:
+    print("⚠️ WARNING: No API_KEY set! API is unsecured!")
+
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 async def validate_api_key(key: str = Security(api_key_header)):
-    # If no API key set in env, allow access (for testing)
+    """Secure API key validation."""
     if not API_KEY:
+        # In production, this should REJECT requests
+        print("⚠️ Dev mode: No API key required")
         return "dev-mode"
+    
     if key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
+    
     return key
 
-# IN-MEMORY DATABASE (Resets when you restart server)
+# In-memory job database
 jobs_db: Dict[str, Dict[str, Any]] = {}
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # DATA MODELS
-# ---------------------------------------------------------------------------
-
+# ============================================================================
 class BlogRequest(BaseModel):
     topic: str
     tone: str = "Professional"
-    plan: str = "premium" # basic or premium
+    plan: str = "premium"
 
 class JobResponse(BaseModel):
     job_id: str
 
-# ---------------------------------------------------------------------------
-# WORKFLOW RUNNER (The Background Worker)
-# ---------------------------------------------------------------------------
-
+# ============================================================================
+# BACKGROUND WORKER
+# ============================================================================
 def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
-    """Run the Agent in a background thread."""
-    print(f"🚀 [Job {job_id}] Started processing: {topic}")
+    """Run the agent workflow in background."""
+    print(f"🚀 [Job {job_id}] Started: {topic}")
     
     try:
-        # 1. Update Status to 'Processing'
+        # Update status
         jobs_db[job_id]["status"] = "PROCESSING"
         jobs_db[job_id]["stage"] = "Agent is working..."
         
-        # 2. Initialize State (Updated to match your latest backend)
+        # Initialize state (SIMPLIFIED)
         initial_state = {
             "topic": topic,
             "tone": tone,
             "plan": plan,
             "iteration_count": 0,
             "error": None,
-            "sources": [],
             
-            # Data Containers
-            "research_data": None,      
-            "raw_research_data": "",    
+            # Data containers
+            "citation_index": "",
             "competitor_headers": "",
-            "blog_outline": None,
+            "blog_outline": "",
             "sections": [],
             "seo_metadata": {},
             "final_blog_post": "",
-            "fact_check_report": None,
+            "fact_check_report": "",
             "image_path": "",
             
-            # 🆕 Social Media Fields
+            # Social media
             "linkedin_post": "",
             "youtube_script": "",
-            "facebook_post": ""
+            "facebook_post": "",
+            
+            # Control
+            "quality_evaluation": None
         }
         
-        # 3. Build Graph
+        # Build and run graph
         app_graph = build_graph()
-        
-        # 4. RUN THE AGENT (Only Once!)
         final_output = app_graph.invoke(initial_state)
         
-        # 5. Handle Failure inside Graph
+        # Handle failure
         if final_output.get("error"):
             raise Exception(final_output["error"])
-
-        # 6. Extract Results
-        quality_data = final_output.get("quality_evaluation", {})
-        score = quality_data.get("final_score", 0) if isinstance(quality_data, dict) else 0
         
-        # 7. Save to 'Database'
+        # Extract results
+        quality_data = final_output.get("quality_evaluation", {})
+        score = quality_data.get("final_score", 0)
+        
+        # Save to database
         jobs_db[job_id].update({
             "status": "COMPLETED",
             "stage": "Finished",
@@ -117,18 +121,16 @@ def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
             "quality_score": score,
             "seo_metadata": final_output.get("seo_metadata", {}),
             "image_path": final_output.get("image_path", ""),
-            
-            # 🆕 Return Social Media Pack
             "social_media": {
                 "linkedin": final_output.get("linkedin_post", ""),
                 "youtube": final_output.get("youtube_script", ""),
                 "facebook": final_output.get("facebook_post", "")
             },
-            
             "completed_at": datetime.utcnow().isoformat() + "Z"
         })
-        print(f"✅ [Job {job_id}] Finished Successfully")
-
+        
+        print(f"✅ [Job {job_id}] Completed")
+    
     except Exception as e:
         print(f"❌ [Job {job_id}] Failed: {e}")
         jobs_db[job_id].update({
@@ -137,31 +139,28 @@ def run_workflow_sync(job_id: str, topic: str, tone: str, plan: str):
             "error_msg": str(e)
         })
 
-# ---------------------------------------------------------------------------
+# ============================================================================
 # API ENDPOINTS
-# ---------------------------------------------------------------------------
-
+# ============================================================================
 @app.get("/")
 async def root():
-    return {"message": "AI Blog Factory API is Running 🚀"}
+    return {"message": "AI Content Factory API is Running 🚀", "version": "2.1.0"}
 
 @app.post("/generate", response_model=JobResponse)
 async def start_generation(
     req: BlogRequest, 
     key: str = Security(validate_api_key)
 ):
-    """Endpoint for UI to start a blog generation."""
+    """Start blog generation."""
     
-    # 1. Validate Input
+    # Validate topic
     validator = TopicValidator()
     check = validator.validate(req.topic)
     if not check["valid"]:
         raise HTTPException(status_code=400, detail=check["reason"])
-
-    # 2. Create Job ID
-    job_id = str(uuid.uuid4())
     
-    # 3. Store Initial Record
+    # Create job
+    job_id = str(uuid.uuid4())
     jobs_db[job_id] = {
         "id": job_id,
         "topic": req.topic,
@@ -172,23 +171,36 @@ async def start_generation(
         "created_at": datetime.utcnow().isoformat() + "Z"
     }
     
-    # 4. Start Background Thread
-    thread = Thread(target=run_workflow_sync, args=(job_id, req.topic, req.tone, req.plan))
+    # Start background thread
+    thread = Thread(
+        target=run_workflow_sync, 
+        args=(job_id, req.topic, req.tone, req.plan),
+        daemon=True
+    )
     thread.start()
     
     return {"job_id": job_id}
 
 @app.get("/status/{job_id}")
 async def check_status(job_id: str, key: str = Security(validate_api_key)):
-    """Endpoint for UI to poll for results."""
+    """Check job status."""
     job = jobs_db.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint (no auth required)."""
+    return {"status": "healthy", "jobs_count": len(jobs_db)}
+
+# ============================================================================
+# MAIN
+# ============================================================================
 if __name__ == "__main__":
     uvicorn.run(
         "Api:app",
         host="0.0.0.0",
         port=8000,
-        reload=True)
+        reload=True
+    )

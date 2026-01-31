@@ -1,437 +1,321 @@
 import os
-import json
+from datetime import date, timedelta
+from typing import List, Optional
+from pathlib import Path
 import re
-import uuid
-import requests
-from typing import Dict, Any, List
-from urllib.parse import urlparse
 
-# 1. IMPORTS
+from langgraph.types import Send
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_core.prompts import PromptTemplate
-# 🆕 OFFICIAL HUGGING FACE CLIENT
-from huggingface_hub import InferenceClient 
 
-from Graph.state import AgentState
+# ------------------------------------------------------------------
+# IMPORT SCHEMAS & TEMPLATES
+# ------------------------------------------------------------------
+from Graph.state import (
+    State, 
+    RouterDecision, 
+    EvidencePack, 
+    Plan, 
+    Task, 
+    EvidenceItem, 
+    GlobalImagePlan,
+    ImageSpec
+)
 from Graph.templates import (
-    RESEARCHER_PROMPT,
-    ANALYST_PROMPT,
-    WRITER_PROMPT,
-    FACT_CHECKER_PROMPT,
-    COMPETITOR_ANALYSIS_PROMPT,
-    LINKEDIN_PROMPT,
-    VIDEO_SCRIPT_PROMPT,
-    FACEBOOK_PROMPT
+    ROUTER_SYSTEM, 
+    RESEARCH_SYSTEM, 
+    ORCH_SYSTEM, 
+    WORKER_SYSTEM, 
+    DECIDE_IMAGES_SYSTEM
 )
 
-# ---------------------------------------------------------------------------
-# 2. CONFIGURATION
-# ---------------------------------------------------------------------------
+# Initialize LLM
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-tavily_api_key = os.getenv("TAVILY_API_KEY")
-tavily_tool = TavilySearchResults(max_results=5, tavily_api_key=tavily_api_key)
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
-llm_cheap = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
-FIRECRAWL_API_URL = "https://api.firecrawl.dev/v1/scrape"
-
-BLOCKED_DOMAINS = {
-    "reddit.com", "quora.com", "twitter.com", "x.com", "facebook.com", 
-    "instagram.com", "tiktok.com", "medium.com", "blogspot.com"
-}
-
-# ---------------------------------------------------------------------------
-# 🆕 3. RESEARCH COMPRESSOR (Token Leak Fix)
-# ---------------------------------------------------------------------------
-
-class ResearchCompressor:
-    """Compress 16KB research → 2KB structured data."""
-    
-    def __init__(self):
-        self.llm = llm_cheap
-    
-    def compress(self, raw_research: str, topic: str) -> Dict[str, Any]:
-        """Convert raw research into structured, compact format."""
-        
-        prompt = PromptTemplate(
-            template="""
-Extract key facts from this research on '{topic}'. Be RUTHLESS about compression.
-
-RAW RESEARCH:
-{raw_research}
-
-OUTPUT AS PURE JSON (NO OTHER TEXT):
-{{
-    "key_facts": [
-        {{"fact": "specific factual claim", "url": "source URL", "confidence": "HIGH/MEDIUM/LOW"}},
-        {{...max 5 facts}}
-    ],
-    "statistics": [
-        {{"stat": "specific number/percentage", "context": "what it refers to", "url": "source URL", "year": 2024}},
-        {{...max 5 stats}}
-    ],
-    "quotes": [
-        {{"quote": "exact quote under 50 words", "author": "name if given", "url": "source URL"}},
-        {{...max 3 quotes}}
-    ]
-}}
-
-CRITICAL RULES:
-- Extract ONLY verifiable claims with URLs
-- Maximum 5 facts, 5 statistics, 3 quotes total
-- No fluff or generic statements
-- If fact has no URL, EXCLUDE IT
-- Each entry MUST be citable
-""",
-            input_variables=["topic", "raw_research"],
-        )
-        
-        try:
-            chain = prompt | self.llm
-            response = chain.invoke({
-                "topic": topic,
-                "raw_research": raw_research[:12000]
+# ------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ------------------------------------------------------------------
+def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
+    """Safe Tavily search wrapper."""
+    if not os.getenv("TAVILY_API_KEY"):
+        print("⚠️ TAVILY_API_KEY missing. Skipping search.")
+        return []
+    try:
+        tool = TavilySearchResults(max_results=max_results)
+        results = tool.invoke({"query": query})
+        out: List[dict] = []
+        for r in results or []:
+            out.append({
+                "title": r.get("title") or "",
+                "url": r.get("url") or "",
+                "snippet": r.get("content") or r.get("snippet") or "",
+                "published_at": r.get("published_date") or r.get("published_at"),
+                "source": r.get("source"),
             })
-            
-            json_text = response.content
-            json_match = re.search(r'\{.*\}', json_text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except Exception as e:
-            print(f"⚠️ Compression failed: {e}")
-        
-        return {
-            "key_facts": [],
-            "statistics": [],
-            "quotes": []
-        }
+        return out
+    except Exception as e:
+        print(f"⚠️ Search failed for '{query}': {e}")
+        return []
 
-# ---------------------------------------------------------------------------
-# 🆕 4. CITATION INDEX (Token Leak Fix)
-# ---------------------------------------------------------------------------
+def _iso_to_date(s: Optional[str]) -> Optional[date]:
+    if not s: return None
+    try: return date.fromisoformat(s[:10])
+    except: return None
 
-class CitationIndex:
-    """Lightweight lookup for citations."""
+def _safe_slug(title: str) -> str:
+    s = title.strip().lower()
+    s = re.sub(r"[^a-z0-9 _-]+", "", s)
+    s = re.sub(r"\s+", "_", s).strip("_")
+    return s or "blog"
+
+# ------------------------------------------------------------------
+# 1. ROUTER NODE
+# ------------------------------------------------------------------
+def router_node(state: State) -> dict:
+    """Decides if we need research and what mode to run in."""
+    print("--- 🚦 ROUTING ---")
+    decider = llm.with_structured_output(RouterDecision)
     
-    def __init__(self, compressed_research: Dict[str, Any]):
-        self.compressed = compressed_research
+    # Ensure as_of is set
+    as_of = state.get("as_of", date.today().isoformat())
     
-    def to_string(self) -> str:
-        """Convert to compact string format for LLM input (max 2KB)."""
-        lines = []
-        lines.append("# CITABLE CLAIMS INDEX\n")
-        
-        lines.append("## Facts")
-        for f in self.compressed.get("key_facts", [])[:5]:
-            lines.append(f"- {f['fact']} ({f['url']}) [Confidence: {f.get('confidence', 'MEDIUM')}]")
-        
-        lines.append("\n## Statistics")
-        for s in self.compressed.get("statistics", [])[:5]:
-            lines.append(f"- {s['stat']} ({s['url']}) [Year: {s.get('year', 'N/A')}]")
-        
-        lines.append("\n## Direct Quotes")
-        for q in self.compressed.get("quotes", [])[:3]:
-            author = f"- {q.get('author', 'Unknown')}" if q.get('author') else ""
-            lines.append(f"- \"{q['quote']}\" {author} ({q['url']})")
-        
-        return "\n".join(lines)
+    decision = decider.invoke([
+        SystemMessage(content=ROUTER_SYSTEM),
+        HumanMessage(content=f"Topic: {state['topic']}\nAs-of date: {as_of}"),
+    ])
 
-# ---------------------------------------------------------------------------
-# 5. HELPER FUNCTIONS
-# ---------------------------------------------------------------------------
+    # Determine context window (recency)
+    if decision.mode == "open_book":
+        recency_days = 7
+    elif decision.mode == "hybrid":
+        recency_days = 45
+    else:
+        recency_days = 3650 # 10 years (effectively forever)
 
-def validate_source(result: dict) -> tuple[bool, str]:
-    url = result.get("url", "").lower()
-    content = result.get("content", "").lower()
-    if any(blocked in url for blocked in BLOCKED_DOMAINS): return False, "Unreliable"
-    if len(content) < 300: return False, "Thin content"
-    return True, "Valid"
-
-def scrape_with_firecrawl_api(url: str) -> str:
-    if not FIRECRAWL_API_KEY: return ""
-    headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}"}
-    payload = {"url": url, "formats": ["markdown"]}
-    try:
-        res = requests.post(FIRECRAWL_API_URL, headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("success"): return data["data"].get("markdown", "")
-        return ""
-    except:
-        return ""
-
-def extract_json_from_response(content: str) -> dict:
-    """Robustly extracts JSON from LLM output using Regex."""
-    try:
-        return json.loads(content)
-    except:
-        pass
-
-    # Regex: Find content between ```json and ```
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-    if match:
-        try: return json.loads(match.group(1))
-        except: pass
-            
-    # Regex: Find first '{' and last '}'
-    match = re.search(r"(\{.*\})", content, re.DOTALL)
-    if match:
-        try: return json.loads(match.group(1))
-        except: pass
-            
-    # Fallback
+    print(f"   Mode: {decision.mode} | Research Needed: {decision.needs_research}")
+    
     return {
-        "blog_outline": content, 
-        "sections": ["Introduction", "Main Body", "Conclusion"],
-        "seo_title": "Generated Blog Post",
-        "meta_description": "A blog post generated by AI.",
-        "target_keywords": []
+        "needs_research": decision.needs_research,
+        "mode": decision.mode,
+        "queries": decision.queries,
+        "recency_days": recency_days,
+        "as_of": as_of
     }
 
-# ---------------------------------------------------------------------------
-# 6. GRAPH NODES - RESEARCHER (WITH COMPRESSION)
-# ---------------------------------------------------------------------------
-
-def researcher_node(state: AgentState) -> Dict[str, Any]:
+# ------------------------------------------------------------------
+# 2. RESEARCH NODE
+# ------------------------------------------------------------------
+def research_node(state: State) -> dict:
+    """Performs web search and extracts structured evidence."""
     print("--- 🔍 RESEARCHING ---")
-    topic = state.get("topic", "")
     
-    try:
-        raw_results = tavily_tool.invoke(topic)
-        urls = [r['url'] for r in raw_results if validate_source(r)[0]][:2]
-        
-        full_content = []
-        for url in urls:
-            content = scrape_with_firecrawl_api(url)
-            if content: full_content.append(f"Source: {url}\n{content[:8000]}")
-            
-        combined = "\n\n".join(full_content)
-        
-        # Run researcher chain (full research)
-        research_res = (RESEARCHER_PROMPT | llm).invoke({"topic": topic, "search_content": combined})
-        comp_res = (COMPETITOR_ANALYSIS_PROMPT | llm).invoke({"topic": topic, "search_content": combined})
-        
-        raw_research_data = research_res.content
-        
-        # 🆕 COMPRESSION STEP
-        print("--- 📊 COMPRESSING RESEARCH ---")
-        compressor = ResearchCompressor()
-        compressed_research = compressor.compress(raw_research_data, topic)
-        
-        # 🆕 CREATE CITATION INDEX
-        citation_idx = CitationIndex(compressed_research)
-        citation_index_str = citation_idx.to_string()
-        
-        print(f"✅ Compressed: {len(raw_research_data)} chars → {len(json.dumps(compressed_research))} chars")
-        
-        return {
-            "research_data": raw_research_data,  # Keep for backward compatibility with fact_checker
-            "raw_research_data": combined,       # Keep for evaluator
-            "compressed_research": compressed_research,  # 🆕
-            "citation_index": citation_index_str,        # 🆕
-            "competitor_headers": comp_res.content
-        }
-    except Exception as e:
-        return {"error": f"Researcher failed: {str(e)}"}
+    queries = (state.get("queries") or [])[:5] # Limit to 5 queries to save tokens
+    raw_results: List[dict] = []
+    
+    for q in queries:
+        print(f"   Searching: {q}")
+        raw_results.extend(_tavily_search(q, max_results=4))
 
-# ---------------------------------------------------------------------------
-# 7. GRAPH NODES - ANALYST
-# ---------------------------------------------------------------------------
+    if not raw_results:
+        print("   ⚠️ No results found.")
+        return {"evidence": []}
 
-def analyst_node(state: AgentState) -> Dict[str, Any]:
+    print("   📊 Extracting Evidence...")
+    extractor = llm.with_structured_output(EvidencePack)
+    pack = extractor.invoke([
+        SystemMessage(content=RESEARCH_SYSTEM),
+        HumanMessage(content=(
+            f"As-of date: {state['as_of']}\n"
+            f"Recency days: {state['recency_days']}\n\n"
+            f"Raw results:\n{str(raw_results)[:15000]}" # Truncate to avoid context errors
+        )),
+    ])
+
+    # Deduplicate by URL
+    dedup = {e.url: e for e in pack.evidence if e.url}
+    evidence = list(dedup.values())
+    
+    print(f"   ✅ Found {len(evidence)} evidence items.")
+    return {"evidence": evidence}
+
+# ------------------------------------------------------------------
+# 3. ORCHESTRATOR NODE (PLANNER)
+# ------------------------------------------------------------------
+def orchestrator_node(state: State) -> dict:
+    """Generates the blog plan/outline."""
     print("--- 📋 PLANNING ---")
-    plan = state.get("plan", "basic").lower() 
     
-    try:
-        chain = ANALYST_PROMPT | llm
-        res = chain.invoke({
-            "topic": state["topic"], 
-            "research_data": state["research_data"],
-            "competitor_headers": state["competitor_headers"],
-            "plan": plan
-        })
-        
-        data = extract_json_from_response(res.content)
-        
-        seo_data = {
-            "title": data.get("seo_title", "Blog Post"),
-            "description": data.get("meta_description", ""),
-            "keywords": data.get("target_keywords", [])
-        }
-        
-        return {
-            "blog_outline": data.get("blog_outline", ""),
-            "sections": data.get("sections", []),
-            "seo_metadata": seo_data
-        }
-    except Exception as e:
-        print(f"Analyst Error: {e}")
-        return {
-            "blog_outline": "Basic Outline", 
-            "sections": ["Introduction", "Key Concepts", "Conclusion"]
-        }
+    planner = llm.with_structured_output(Plan)
+    mode = state.get("mode", "closed_book")
+    evidence = state.get("evidence", [])
 
-# ---------------------------------------------------------------------------
-# 8. GRAPH NODES - WRITER (WITH CITATION INDEX)
-# ---------------------------------------------------------------------------
+    plan = planner.invoke([
+        SystemMessage(content=ORCH_SYSTEM),
+        HumanMessage(content=(
+            f"Topic: {state['topic']}\n"
+            f"Mode: {mode}\n"
+            f"Evidence Context:\n{[e.model_dump() for e in evidence][:10]}"
+        )),
+    ])
+    
+    print(f"   Generated {len(plan.tasks)} sections.")
+    return {"plan": plan}
 
-def writer_node(state: AgentState) -> Dict[str, Any]:
-    print("--- ✍️ WRITING ---")
-    
-    feedback = state.get("quality_evaluation", {}).get("tier3", {}).get("feedback", "")
-    if feedback and state.get("final_blog_post"):
-        print("--- 🔄 REWRITING ---")
-        res = llm.invoke(f"Rewrite based on: {feedback}\n\n{state['final_blog_post']}")
-        return {"final_blog_post": res.content}
-
-    sections = state.get("sections", [])
-    if not sections: return {"error": "No sections to write"}
-    
-    clean_sections = list(dict.fromkeys([s for s in sections if s]))
-    full_content = []
-    
-    # 🆕 Use citation_index if available, fallback to research_data
-    citation_index = state.get("citation_index", "")
-    research_data = state.get("research_data", "")
-    
-    for i, title in enumerate(clean_sections):
-        print(f"   ✍️ Section {i+1}/{len(clean_sections)}: {title}")
-        prev = full_content[-1][-1000:] if full_content else ""
+# ------------------------------------------------------------------
+# 4. FANOUT (PARALLEL DISPATCHER)
+# ------------------------------------------------------------------
+def fanout(state: State):
+    """Generates parallel workers for each section."""
+    if not state["plan"]:
+        raise ValueError("No plan found in state!")
         
-        chain = WRITER_PROMPT | llm
-        
-        # 🆕 Use citation_index if available
-        data_to_pass = citation_index if citation_index else research_data
-        
-        res = chain.invoke({
+    return [
+        Send("worker", {
+            "task": task.model_dump(),
             "topic": state["topic"],
-            "section_title": title,
-            "previous_content": prev,
-            "research_data": data_to_pass,  # 🆕 Can be citation_index or research_data
-            "tone": state.get("tone", "Professional"),
-            "confidence_level": "High"
+            "mode": state["mode"],
+            "plan": state["plan"].model_dump(),
+            "evidence": [e.model_dump() for e in state.get("evidence", [])],
         })
-        
-        text = res.content
-        if f"## {title}" not in text: text = f"## {title}\n\n{text}"
-        full_content.append(text)
+        for task in state["plan"].tasks
+    ]
 
-    return {"final_blog_post": "\n\n".join(full_content)}
+# ------------------------------------------------------------------
+# 5. WORKER NODE (WRITER)
+# ------------------------------------------------------------------
+def worker_node(payload: dict) -> dict:
+    """Writes a single section of the blog."""
+    task = Task(**payload["task"])
+    plan = Plan(**payload["plan"])
+    evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
+    
+    print(f"   ✍️ Writing Section: {task.title}")
 
-# ---------------------------------------------------------------------------
-# 9. GRAPH NODES - FACT CHECKER
-# ---------------------------------------------------------------------------
+    # Format inputs for the LLM
+    bullets_text = "\n- " + "\n- ".join(task.bullets)
+    evidence_text = "\n".join(
+        f"- {e.title} | {e.url} | {e.published_at or 'Unknown Date'}"
+        for e in evidence[:15]
+    )
 
-def fact_checker_node(state: AgentState) -> Dict[str, Any]:
-    print("--- 🔍 FACT CHECKING ---")
+    section_md = llm.invoke([
+        SystemMessage(content=WORKER_SYSTEM),
+        HumanMessage(content=(
+            f"Blog Title: {plan.blog_title}\n"
+            f"Section: {task.title}\n"
+            f"Goal: {task.goal}\n"
+            f"Target Words: {task.target_words}\n"
+            f"Bullets to Cover:{bullets_text}\n\n"
+            f"Available Evidence (Cite these URLs):\n{evidence_text}\n"
+        )),
+    ]).content.strip()
+
+    # Return as a tuple (id, content) for re-sorting later
+    return {"sections": [(task.id, section_md)]}
+
+# ------------------------------------------------------------------
+# 6. REDUCER: MERGE CONTENT
+# ------------------------------------------------------------------
+def merge_content(state: State) -> dict:
+    """Combines all written sections into one markdown document."""
+    print("--- 🔗 MERGING SECTIONS ---")
+    plan = state["plan"]
+    
+    # Sort by Task ID to ensure correct order
+    ordered_sections = [md for _, md in sorted(state["sections"], key=lambda x: x[0])]
+    
+    body = "\n\n".join(ordered_sections).strip()
+    merged_md = f"# {plan.blog_title}\n\n{body}\n"
+    
+    return {"merged_md": merged_md}
+
+# ------------------------------------------------------------------
+# 7. REDUCER: DECIDE IMAGES
+# ------------------------------------------------------------------
+def decide_images(state: State) -> dict:
+    """Decides where to place images in the merged text."""
+    print("--- 🖼️ PLANNING IMAGES ---")
+    planner = llm.with_structured_output(GlobalImagePlan)
+    
+    image_plan = planner.invoke([
+        SystemMessage(content=DECIDE_IMAGES_SYSTEM),
+        HumanMessage(content=(
+            f"Topic: {state['topic']}\n"
+            f"Current Blog Content:\n{state['merged_md'][:10000]}..." # Truncate check
+        )),
+    ])
+
+    return {
+        "md_with_placeholders": image_plan.md_with_placeholders,
+        "image_specs": [img.model_dump() for img in image_plan.images],
+    }
+
+# ------------------------------------------------------------------
+# 8. REDUCER: GENERATE IMAGES (SAFE VERSION)
+# ------------------------------------------------------------------
+def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
+    """Generates image using Google GenAI (Gemini)."""
     try:
-        # 🆕 Try to use compressed research, fallback to raw
-        research = state.get("raw_research_data") or state.get("research_data")
+        from google import genai
+        from google.genai import types
         
-        # If we have compressed research, convert to string for fact-checker
-        if state.get("compressed_research"):
-            research = json.dumps(state.get("compressed_research"), indent=2)
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key: return None
+
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash-exp", # Updated model name
+            contents=prompt,
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
         
-        chain = FACT_CHECKER_PROMPT | llm
-        res = chain.invoke({
-            "topic": state["topic"],
-            "research_data": research,
-            "blog_post": state["final_blog_post"]
-        })
-        return {"fact_check_report": res.content}
+        # Extract bytes (New SDK format)
+        if resp.candidates and resp.candidates[0].content.parts:
+            for part in resp.candidates[0].content.parts:
+                if part.inline_data:
+                    return part.inline_data.data
+        return None
     except Exception as e:
-        return {"error": f"Fact check failed: {str(e)}"}
+        print(f"   ⚠️ Image Generation Failed: {e}")
+        return None
 
-# ---------------------------------------------------------------------------
-# 10. GRAPH NODES - IMAGE GENERATOR (YOUR VERSION)
-# ---------------------------------------------------------------------------
-
-def image_generator_node(state: AgentState) -> Dict[str, Any]:
-    print("--- 🎨 GENERATING IMAGE (FLUX.1) ---")
+def generate_and_place_images(state: State) -> dict:
+    """Generates images and replaces placeholders."""
+    print("--- 🎨 GENERATING IMAGES ---")
     
-    topic = state.get("topic", "")
-    hf_token = os.getenv("HF_TOKEN")
+    plan = state["plan"]
+    md = state.get("md_with_placeholders") or state["merged_md"]
+    image_specs = state.get("image_specs", []) or []
+
+    # Prepare output directory
+    images_dir = Path("generated_images")
+    images_dir.mkdir(exist_ok=True)
+
+    for spec in image_specs:
+        placeholder = spec["placeholder"]
+        filename = spec["filename"]
+        
+        print(f"   🎨 Generating: {spec['prompt'][:50]}...")
+        
+        # Try generation
+        img_bytes = _generate_image_bytes_google(spec["prompt"])
+        
+        if img_bytes:
+            # Save Image
+            out_path = images_dir / filename
+            out_path.write_bytes(img_bytes)
+            # Link in Markdown
+            img_md = f"![{spec['alt']}](generated_images/{filename})\n*{spec['caption']}*"
+            md = md.replace(placeholder, img_md)
+        else:
+            # Fallback text if generation fails/skipped
+            fallback = f"> *[Image Suggested: {spec['caption']}]*"
+            md = md.replace(placeholder, fallback)
+
+    # Save Final File
+    final_filename = f"{_safe_slug(plan.blog_title)}.md"
+    Path(final_filename).write_text(md, encoding="utf-8")
     
-    if not hf_token:
-        print("   ⚠️ No HF_TOKEN found. Skipping image.")
-        return {"image_path": None}
-
-    try:
-        # 1. Initialize Client (Handles URL/Routing automatically)
-        # Use the specific model for better results
-        client = InferenceClient("Tongyi-MAI/Z-Image-Turbo", token=hf_token)
-        
-        # 2. Generate Prompt using LLM
-        prompt_request = f"""
-        Create a detailed, artistic image generation prompt for a blog post about: '{topic}'.
-        Style: Modern, Minimalist, Tech-focused, Digital Art. NO TEXT.
-        Output ONLY the prompt.
-        """
-        image_prompt = llm.invoke(prompt_request).content
-        print(f"   🎨 Prompt: {image_prompt[:60]}...")
-
-        # 3. Generate Image
-        # Call the correct method for image generation
-        image = client.image(prompt_request) 
-        
-        # 4. Save to disk
-        filename = f"blog_image_{uuid.uuid4().hex[:8]}.png"
-        image.save(filename)
-        print(f"   ✅ Image Saved: {filename}")
-        
-        return {"image_path": filename}
-
-    except Exception as e:
-        print(f"   ⚠️ Image Gen Failed: {e}")
-        return {"image_path": None}
-def social_media_node(state: AgentState) -> Dict[str, Any]:
-    print("--- 📱 GENERATING SOCIAL MEDIA CONTENT ---")
-    
-    # 1. Gather Inputs
-    blog_post = state.get("final_blog_post", "")
-    seo = state.get("seo_metadata", {})
-    
-    # Fallbacks if SEO data missing
-    title = seo.get("title", state["topic"])
-    description = seo.get("description", "A comprehensive guide.")
-    
-    if not blog_post:
-        return {"error": "No blog post to repurpose."}
-
-    try:
-        # 2. Run Chains (Parallel execution would be faster, but sequential is safer for now)
-        
-        # LinkedIn
-        print("   💼 Generating LinkedIn Post...")
-        linkedin_res = (LINKEDIN_PROMPT | llm).invoke({
-            "title": title,
-            "description": description,
-            "blog_post": blog_post
-        })
-        
-        # YouTube
-        print("   🎥 Generating YouTube Script...")
-        youtube_res = (VIDEO_SCRIPT_PROMPT | llm).invoke({
-            "title": title,
-            "blog_post": blog_post
-        })
-        
-        # Facebook
-        print("   📘 Generating Facebook Strategy...")
-        facebook_res = (FACEBOOK_PROMPT | llm).invoke({
-            "title": title,
-            "description": description,
-            "blog_post": blog_post
-        })
-
-        return {
-            "linkedin_post": linkedin_res.content,
-            "youtube_script": youtube_res.content,
-            "facebook_post": facebook_res.content
-        }
-
-    except Exception as e:
-        print(f"Social Media Node Failed: {e}")
-        return {"error": f"Social Gen Failed: {str(e)}"}
+    print(f"   ✅ Saved final blog to: {final_filename}")
+    return {"final": md}
