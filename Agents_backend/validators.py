@@ -1,70 +1,82 @@
 import re
 import json
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Any
 from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
 
 # ============================================================================
-# TOPIC VALIDATOR (FIXED)
+# 1. TOPIC VALIDATOR (AI-POWERED)
 # ============================================================================
 class TopicValidator:
     def __init__(self):
+        # We use a cheap model for validation to save cost/time
         self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     
     def _basic_syntax_check(self, topic: str) -> Tuple[bool, str]:
+        """Fast, free checks before calling the LLM."""
         topic = topic.strip()
         if len(topic) < 3: 
             return False, "❌ Topic too short"
         if len(topic) > 200: 
             return False, "❌ Topic too long"
+        # Check if it has at least one alphabet character
         if not any(c.isalpha() for c in topic): 
             return False, "❌ No words detected"
+        # Check for repeated gibberish (e.g. "aaaaaa")
         if re.search(r'(.)\1{4,}', topic): 
             return False, "❌ Gibberish detected"
         return True, "OK"
     
     def _llm_gatekeeper(self, topic: str) -> Tuple[bool, str]:
-        """LLM-based validation with better error handling."""
+        """LLM-based validation to check for safety and coherence."""
         try:
-            prompt = f"""Evaluate this topic: "{topic}"
+            prompt = f"""Evaluate this blog topic: "{topic}"
 
-Return ONLY valid JSON:
-{{"valid": true, "reason": "OK"}} OR {{"valid": false, "reason": "Why not"}}
+            Return ONLY valid JSON with this format:
+            {{
+                "valid": boolean,
+                "reason": "short explanation"
+            }}
 
-Check: Is it coherent, safe, and researchable?"""
+            Criteria for VALID:
+            1. Safe (no hate speech, illegal acts, porn).
+            2. Coherent (makes sense grammatically).
+            3. Researchable (not a random string of numbers).
+            """
             
             response = self.llm.invoke(prompt)
             content = response.content.strip()
             
-            # Remove markdown code blocks
-            if "```" in content:
-                content = re.sub(r"```(?:json)?\n?", "", content)
+            # Clean up potential markdown formatting from LLM
+            content = content.replace("```json", "").replace("```", "").strip()
             
             data = json.loads(content)
-            return data.get("valid", False), data.get("reason", "Unknown")
+            return data.get("valid", False), data.get("reason", "Unknown reason")
         
         except json.JSONDecodeError:
-            # Fallback: Check for keywords
-            if "valid" in content.lower() and "true" in content.lower():
-                return True, "OK"
-            return True, "OK (fallback)"
+            # Fallback: if JSON fails, assume it's okay but log it
+            print("⚠️ Validator JSON parse failed. Defaulting to True.")
+            return True, "Topic accepted (Fallback)"
         
         except Exception as e:
             print(f"⚠️ Gatekeeper Exception: {str(e)}")
-            return True, "OK (fallback)"
+            return True, "Topic accepted (System Error)"
     
-    def validate(self, topic: str) -> Dict:
+    def validate(self, topic: str) -> Dict[str, Any]:
+        # 1. Cheap check first
         ok, msg = self._basic_syntax_check(topic)
         if not ok: 
             return {"valid": False, "reason": msg}
         
+        # 2. Smart check second
         ok, msg = self._llm_gatekeeper(topic)
         return {"valid": ok, "reason": msg}
 
 # ============================================================================
-# EVALUATOR (SIMPLIFIED)
+# 2. BLOG EVALUATOR (METRICS + AI CRITIC)
 # ============================================================================
 class BlogEvaluator:
-    """Simplified quality evaluator."""
+    """Quality evaluator that combines code-based metrics with AI critique."""
     
     def __init__(self):
         self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -76,37 +88,41 @@ class BlogEvaluator:
         h3 = len(re.findall(r'^### ', blog_post, re.M))
         
         score = 0
-        if h1 == 1: score += 1  # Exactly one H1
-        if 5 <= h2 <= 20: score += 1  # Good H2 count
-        if h3 >= 3: score += 1  # Some H3s
+        if h1 >= 1: score += 1      # Has a main title
+        if 3 <= h2 <= 20: score += 1 # Reasonable number of sections
+        if h3 >= 2: score += 1      # Has subsections (depth)
         
         return score
     
     def evaluate_readability(self, blog_post: str) -> float:
-        """Check sentence length (0-2 points)."""
-        words = blog_post.split()
-        sentences = [s for s in re.split(r'[.!?]+', blog_post) if s.strip()]
+        """Check sentence length and flow (0-2 points)."""
+        # Strip code blocks to avoid skewing word counts
+        clean_text = re.sub(r'```.*?```', '', blog_post, flags=re.DOTALL)
+        
+        words = clean_text.split()
+        sentences = [s for s in re.split(r'[.!?]+', clean_text) if s.strip()]
         
         if not words or not sentences:
             return 0
         
         avg_len = len(words) / len(sentences)
         
-        # Ideal: 15-25 words per sentence
-        if 15 <= avg_len <= 25:
+        # Ideal: 10-25 words per sentence for blog posts
+        if 10 <= avg_len <= 25:
             return 2
-        elif 10 <= avg_len <= 30:
+        elif 8 <= avg_len <= 35:
             return 1
         return 0
     
     def evaluate_citations(self, blog_post: str) -> float:
         """Check citation coverage (0-5 points)."""
-        # Count URLs in format (https://...)
-        urls = re.findall(r'\(https?://[^\)]+\)', blog_post)
+        # Count Markdown links: [Title](https://...)
+        # We look for http to ensure it's a URL
+        urls = re.findall(r'\]\(http', blog_post)
         url_count = len(urls)
         
-        # Score based on citation density
-        if url_count >= 10:
+        # Score based on density
+        if url_count >= 8:
             return 5
         elif url_count >= 5:
             return 3
@@ -114,16 +130,18 @@ class BlogEvaluator:
             return 1
         return 0
     
-    def evaluate(self, blog_post: str, topic: str) -> Dict:
+    def evaluate(self, blog_post: str, topic: str) -> Dict[str, Any]:
         """Run complete evaluation."""
         
-        # Hard metrics (0-10)
+        # Hard metrics (0-10 scale)
         struct_score = self.evaluate_structure(blog_post)
         read_score = self.evaluate_readability(blog_post)
         cite_score = self.evaluate_citations(blog_post)
         
         # Calculate final score
         final_score = struct_score + read_score + cite_score
+        # Cap at 10 just in case
+        final_score = min(final_score, 10)
         
         # Determine verdict
         if final_score >= 8:
@@ -135,31 +153,31 @@ class BlogEvaluator:
         else:
             verdict = "❌ POOR"
         
-        # Get LLM feedback
+        # Get Qualitative Feedback from AI
         try:
-            feedback_prompt = f"""Analyze this blog on '{topic}'. Score: {final_score}/10.
-Provide 2-3 specific, actionable improvements.
-Keep it under 100 words."""
+            feedback_prompt = f"""Analyze this blog post about '{topic}'. 
+            The automated quality score is {final_score}/10.
             
-            feedback = self.llm.invoke(feedback_prompt).content
+            Provide 2 specific, actionable improvements the writer could make.
+            Keep it strictly under 50 words.
+            """
+            
+            feedback = self.llm.invoke(feedback_prompt).content.strip()
         except:
-            feedback = "Could not generate feedback."
+            feedback = "AI Feedback unavailable."
         
         return {
             "final_score": final_score,
             "verdict": verdict,
-            "tier1": {
-                "structure": struct_score,
-                "readability": read_score,
-                "citations": cite_score
+            "metrics": {
+                "structure_score": struct_score,
+                "readability_score": read_score,
+                "citation_score": cite_score
             },
-            "tier3": {
-                "feedback": feedback
-            }
+            "ai_feedback": feedback
         }
 
-# Convenience function for backward compatibility
+# Convenience function if called directly
 def realistic_evaluation(blog_post: str, research_data: str, topic: str) -> Dict:
-    """Legacy function wrapper."""
     evaluator = BlogEvaluator()
     return evaluator.evaluate(blog_post, topic)
