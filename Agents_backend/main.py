@@ -63,8 +63,13 @@ def refine_plan_with_llm(current_plan: Plan, feedback: str) -> Plan:
 # ===========================================================================
 # BUILD GRAPH (WITH INTERRUPTS)
 # ===========================================================================
-def build_graph():
-    # 1. Reducer Subgraph (Same as before)
+def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
+    """
+    Constructs the workflow. 
+    Accepts 'memory' to persist state across Streamlit re-runs.
+    """
+
+    # 1. Reducer Subgraph
     reducer = StateGraph(State)
     reducer.add_node("merge_content", merge_content)
     reducer.add_node("decide_images", decide_images)
@@ -95,29 +100,23 @@ def build_graph():
         
     workflow.add_conditional_edges("router", route_next)
     workflow.add_edge("research", "orchestrator")
-    
-    # -----------------------------------------------------------
-    # CRITICAL CHANGE: FANOUT LOGIC
-    # -----------------------------------------------------------
-    # We branch from orchestrator to workers
     workflow.add_conditional_edges("orchestrator", fanout, ["worker"])
-    
     workflow.add_edge("worker", "reducer")
     workflow.add_edge("reducer", "fact_checker")
     workflow.add_edge("fact_checker", "social_media")
     workflow.add_edge("social_media", "evaluator")
     workflow.add_edge("evaluator", END)
 
-    # 3. Add Checkpointer (Memory) and Interrupt
-    memory = MemorySaver()
+    # 3. Add Checkpointer (Memory)
+    # If no memory provided (first run), create new one.
+    # If memory provided (Streamlit re-run), use it.
+    if memory is None:
+        memory = MemorySaver()
     
-    # INTERRUPT AFTER ORCHESTRATOR
-    # The graph will stop *after* the plan is made, but *before* workers start.
     return workflow.compile(
         checkpointer=memory, 
         interrupt_after=["orchestrator"]
     )
-
 # ===========================================================================
 # MAIN RUNNER (HUMAN-IN-THE-LOOP)
 # ===========================================================================
