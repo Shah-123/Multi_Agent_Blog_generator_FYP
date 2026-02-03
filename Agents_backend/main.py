@@ -80,8 +80,10 @@ def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
     reducer.add_edge("generate_and_place_images", END)
 
     # 2. Main Graph
-    workflow = StateGraph(State)
     
+    workflow = StateGraph(State)
+    from Graph.podcast_studio import podcast_node
+
     # Add Nodes
     workflow.add_node("router", router_node)
     workflow.add_node("research", research_node)
@@ -90,6 +92,7 @@ def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
     workflow.add_node("reducer", reducer.compile()) 
     workflow.add_node("fact_checker", fact_checker_node)
     workflow.add_node("social_media", social_media_node)
+    workflow.add_node("audio_generator", podcast_node)
     workflow.add_node("evaluator", evaluator_node)
 
     # Edges
@@ -104,7 +107,8 @@ def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
     workflow.add_edge("worker", "reducer")
     workflow.add_edge("reducer", "fact_checker")
     workflow.add_edge("fact_checker", "social_media")
-    workflow.add_edge("social_media", "evaluator")
+    workflow.add_edge("social_media", "audio_generator")
+    workflow.add_edge("audio_generator", "evaluator")
     workflow.add_edge("evaluator", END)
 
     # 3. Add Checkpointer (Memory)
@@ -229,7 +233,7 @@ def run_app():
     print("="*80)
     
     if final_state.get("final"):
-        print(f"\n📄 BLOG PREVIEW:\n{final_state['final'][:500]}...\n")
+        print(f"\n📄 BLOG PREVIEW:\n{final_state['final'][:]}...\n")
         print(f"👉 Full content saved to file.")
     
     if final_state.get("linkedin_post"):

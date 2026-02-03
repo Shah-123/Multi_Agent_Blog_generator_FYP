@@ -37,7 +37,7 @@ from Graph.structured_data import FactCheckReport
 
 # Initialize LLM
 # optimize: model="gpt-4o" is better for the Orchestrator, but "gpt-4o-mini" is cheaper
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 # ------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -128,7 +128,7 @@ def research_node(state: State) -> dict:
         HumanMessage(content=(
             f"As-of date: {state['as_of']}\n"
             f"Recency days: {state['recency_days']}\n\n"
-            f"Raw results:\n{str(raw_results)[:15000]}" 
+            f"Raw results:\n{str(raw_results)}" 
         )),
     ])
 
