@@ -28,7 +28,8 @@ from Graph.nodes import (
     generate_and_place_images,
     fact_checker_node, 
     social_media_node, 
-    evaluator_node
+    evaluator_node,
+    _safe_slug
 )
 from validators import TopicValidator
 
@@ -227,20 +228,42 @@ def run_app():
     # FINAL DISPLAY
     # -----------------------------------------------------------------------
     final_state = app.get_state(thread_config).values
-    
-    print("\n" + "="*80)
-    print("✅ WORKFLOW COMPLETE")
-    print("="*80)
-    
+    import re
+    # print("\n" + "="*80)
+    # print("✅ WORKFLOW COMPLETE")
+    # print("="*80)
+
     if final_state.get("final"):
-        print(f"\n📄 BLOG PREVIEW:\n{final_state['final'][:]}...\n")
-        print(f"👉 Full content saved to file.")
-    
+        full_blog = final_state['final']
+        
+        # Count stats
+        word_count = len(full_blog.split())
+        sections = re.findall(r'^##', full_blog, re.MULTILINE)
+        
+        print(f"\n📊 Generated Blog Stats:")
+        print(f"   📝 {word_count:,} words")
+        print(f"   📑 {len(sections)} sections")
+        print(f"   ⏱️ ~{word_count // 200} min read")
+        
+        # Show preview
+        print(f"\n📄 PREVIEW (First 500 chars):")
+        print("-" * 60)
+        print(full_blog[:500])
+        print("\n... [See full blog in saved file] ...")
+        print("-" * 60)
+        
+        # Show where saved
+        filename = f"{_safe_slug(final_state['plan'].blog_title)}.md"
+        print(f"\n💾 Complete blog saved to: {filename}")
+
     if final_state.get("linkedin_post"):
-        print(f"\n📱 LINKEDIN PREVIEW:\n{final_state['linkedin_post'][:200]}...")
+        print(f"\n📱 LINKEDIN PREVIEW (First 200 chars):")
+        print(f"{final_state['linkedin_post']}...")
 
     if final_state.get("fact_check_report"):
-         print(f"\n🕵️ FACT CHECK:\n{final_state['fact_check_report'][:200]}...")
+        print(f"\n🕵️ FACT CHECK SUMMARY:")
+        # Show just first 300 chars of report
+        print(f"{final_state['fact_check_report']}...")
 
 if __name__ == "__main__":
     run_app()
