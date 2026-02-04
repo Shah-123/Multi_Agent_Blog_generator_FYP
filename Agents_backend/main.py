@@ -1,12 +1,13 @@
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Environment Setup
 load_dotenv()
 
-# LangGraph Imports - NOW INCLUDES MEMORY & CHECKPOINTING
+# LangGraph Imports
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -39,12 +40,10 @@ from validators import TopicValidator
 def refine_plan_with_llm(current_plan: Plan, feedback: str) -> Plan:
     """
     Uses AI to modify the plan based on user feedback.
-    This runs 'outside' the graph, just to update the state.
     """
     print(f"\n   🤖 Refining plan based on: '{feedback}'...")
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     
-    # We define a simple structured output for the updated plan
     editor = llm.with_structured_output(Plan)
     
     system_prompt = """You are a helpful editor. 
@@ -62,14 +61,168 @@ def refine_plan_with_llm(current_plan: Plan, feedback: str) -> Plan:
     return new_plan
 
 # ===========================================================================
+# FILE SYSTEM ORGANIZATION FUNCTIONS
+# ===========================================================================
+def create_blog_structure(topic: str) -> dict:
+    """
+    Creates organized folder structure for a blog.
+    Returns: dict with paths for different content types
+    """
+    # Create timestamp for unique folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_topic = _safe_slug(topic)[:50]  # Limit length
+    
+    # Base folder
+    base_folder = f"blogs/{safe_topic}_{timestamp}"
+    
+    # Subfolders
+    folders = {
+        "base": base_folder,
+        "content": f"{base_folder}/content",
+        "social": f"{base_folder}/social_media",
+        "reports": f"{base_folder}/reports",
+        "assets": f"{base_folder}/assets/images",
+        "research": f"{base_folder}/research",
+        "audio": f"{base_folder}/audio",
+        "metadata": f"{base_folder}/metadata"
+    }
+    
+    # Create all folders
+    for folder_path in folders.values():
+        Path(folder_path).mkdir(parents=True, exist_ok=True)
+        print(f"   📁 Created: {folder_path}")
+    
+    return folders
+
+def save_blog_content(folders: dict, state: State) -> dict:
+    """
+    Save all blog components to organized folders.
+    Returns: dict of saved file paths
+    """
+    saved_files = {}
+    plan = state.get("plan")
+    
+    if not plan:
+        print("❌ No plan found to save content.")
+        return saved_files
+    
+    # 1. Save main blog markdown
+    if state.get("final"):
+        blog_filename = f"{folders['content']}/{_safe_slug(plan.blog_title)}.md"
+        Path(blog_filename).write_text(state["final"], encoding="utf-8")
+        saved_files["blog"] = blog_filename
+        print(f"   📄 Blog saved: {blog_filename}")
+    
+    # 2. Save blog without images (clean version)
+    if state.get("merged_md"):
+        clean_filename = f"{folders['content']}/{_safe_slug(plan.blog_title)}_no_images.md"
+        Path(clean_filename).write_text(state["merged_md"], encoding="utf-8")
+        saved_files["blog_clean"] = clean_filename
+    
+    # 3. Save social media posts
+    social_files = []
+    for platform, content in [("linkedin", state.get("linkedin_post")),
+                             ("youtube", state.get("youtube_script")),
+                             ("facebook", state.get("facebook_post"))]:
+        if content:
+            filename = f"{folders['social']}/{platform}_{_safe_slug(plan.blog_title)}.txt"
+            Path(filename).write_text(content, encoding="utf-8")
+            social_files.append(filename)
+            print(f"   📱 {platform.capitalize()} saved: {filename}")
+    
+    saved_files["social"] = social_files
+    
+    # 4. Save reports
+    if state.get("fact_check_report"):
+        report_file = f"{folders['reports']}/fact_check.txt"
+        Path(report_file).write_text(state["fact_check_report"], encoding="utf-8")
+        saved_files["fact_check"] = report_file
+        print(f"   🕵️ Fact check saved: {report_file}")
+    
+    if state.get("quality_evaluation"):
+        import json
+        eval_file = f"{folders['reports']}/quality_evaluation.json"
+        with open(eval_file, 'w', encoding='utf-8') as f:
+            json.dump(state["quality_evaluation"], f, indent=2)
+        saved_files["quality_eval"] = eval_file
+        print(f"   📊 Quality eval saved: {eval_file}")
+    
+    # 5. Save research evidence
+    if state.get("evidence"):
+        import json
+        evidence_file = f"{folders['research']}/evidence.json"
+        evidence_data = [e.model_dump() for e in state["evidence"]]
+        with open(evidence_file, 'w', encoding='utf-8') as f:
+            json.dump(evidence_data, f, indent=2)
+        saved_files["evidence"] = evidence_file
+        print(f"   🔍 Research evidence saved: {evidence_file}")
+    
+    # 6. Save plan
+    if plan:
+        plan_file = f"{folders['metadata']}/plan.json"
+        with open(plan_file, 'w', encoding='utf-8') as f:
+            f.write(plan.model_dump_json(indent=2))
+        saved_files["plan"] = plan_file
+    
+    # 7. Save metadata
+    metadata = {
+        "topic": state.get("topic"),
+        "as_of": state.get("as_of"),
+        "mode": state.get("mode"),
+        "generated_at": datetime.now().isoformat(),
+        "word_count": len(state.get("final", "").split()) if state.get("final") else 0,
+        "file_paths": saved_files
+    }
+    
+    metadata_file = f"{folders['metadata']}/metadata.json"
+    with open(metadata_file, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2)
+    
+    saved_files["metadata"] = metadata_file
+    
+    return saved_files
+
+def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
+    """Generate a README file for the blog package."""
+    plan = state.get("plan")
+    
+    readme_content = f"""# {plan.blog_title if plan else 'Generated Blog'}
+
+## 📋 Blog Information
+- **Topic**: {state.get('topic', 'N/A')}
+- **Generated Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- **Target Audience**: {plan.audience if plan else 'N/A'}
+- **Tone**: {plan.tone if plan else 'N/A'}
+- **Word Count**: {len(state.get('final', '').split()) if state.get('final') else 0}
+
+## 📁 Folder Structure
+
+## 📊 Quality Metrics
+{state.get('fact_check_report', 'No fact check available')}
+
+## 🚀 How to Use
+1. **Main Blog**: Open `content/{_safe_slug(plan.blog_title)}.md` in any markdown viewer
+2. **Social Media**: Copy content from `social_media/` files
+3. **Reports**: Check `reports/` for quality analysis
+
+## ⚙️ Generation Details
+- **Mode**: {state.get('mode', 'N/A')}
+- **Research Queries**: {len(state.get('queries', []))}
+- **Evidence Sources**: {len(state.get('evidence', []))}
+
+---
+*Generated by AI Content Factory*
+"""
+    
+    readme_file = f"{folders['base']}/README.md"
+    Path(readme_file).write_text(readme_content, encoding="utf-8")
+    return readme_file
+
+# ===========================================================================
 # BUILD GRAPH (WITH INTERRUPTS)
 # ===========================================================================
-def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
-    """
-    Constructs the workflow. 
-    Accepts 'memory' to persist state across Streamlit re-runs.
-    """
-
+def build_graph(memory=None):
+    """Constructs the workflow."""
     # 1. Reducer Subgraph
     reducer = StateGraph(State)
     reducer.add_node("merge_content", merge_content)
@@ -81,7 +234,6 @@ def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
     reducer.add_edge("generate_and_place_images", END)
 
     # 2. Main Graph
-    
     workflow = StateGraph(State)
     from Graph.podcast_studio import podcast_node
 
@@ -112,9 +264,7 @@ def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
     workflow.add_edge("audio_generator", "evaluator")
     workflow.add_edge("evaluator", END)
 
-    # 3. Add Checkpointer (Memory)
-    # If no memory provided (first run), create new one.
-    # If memory provided (Streamlit re-run), use it.
+    # 3. Add Checkpointer
     if memory is None:
         memory = MemorySaver()
     
@@ -122,31 +272,44 @@ def build_graph(memory=None): # <--- THIS IS THE CRITICAL FIX
         checkpointer=memory, 
         interrupt_after=["orchestrator"]
     )
+
 # ===========================================================================
-# MAIN RUNNER (HUMAN-IN-THE-LOOP)
+# MAIN RUNNER WITH ORGANIZED STORAGE
 # ===========================================================================
 def run_app():
     print("="*80)
-    print("🚀 AI CONTENT FACTORY (HUMAN-IN-THE-LOOP MODE)")
+    print("🚀 AI CONTENT FACTORY (ORGANIZED STORAGE MODE)")
     print("="*80)
     
     # 1. Get Topic
     topic = input("\n📝 Enter blog topic: ").strip()
-    if not topic: return
-    
-    validator = TopicValidator()
-    if not validator.validate(topic)["valid"]:
-        print("❌ Topic Rejected.")
+    if not topic: 
+        print("❌ No topic provided.")
         return
-
-    # 2. Config for Persistence (Required for HITL)
-    # We use a static thread_id so we can resume the same session
+    
+    # 2. Validate topic
+    validator = TopicValidator()
+    validation_result = validator.validate(topic)
+    
+    if not validation_result["valid"]:
+        print(f"❌ Topic Rejected: {validation_result['reason']}")
+        return
+    
+    print(f"✅ Topic validated: {topic}")
+    
+    # 3. Create organized folder structure
+    print(f"\n📁 Creating organized folder structure...")
+    folders = create_blog_structure(topic)
+    print(f"   ✅ Base folder: {folders['base']}")
+    
+    # 4. Initial state with folder info
     thread_config = {"configurable": {"thread_id": "1"}}
     
     initial_state = {
         "topic": topic,
         "as_of": date.today().isoformat(),
         "sections": [],
+        "blog_folder": folders["base"]  # Pass folder info to nodes
     }
     
     print(f"\n🚀 PHASE 1: RESEARCH & PLANNING...")
@@ -155,21 +318,18 @@ def run_app():
     app = build_graph()
     
     # -----------------------------------------------------------------------
-    # PASS 1: Run until the Interrupt (After Orchestrator)
+    # PASS 1: Run until the Interrupt
     # -----------------------------------------------------------------------
-    # We use .stream() to see progress
     for event in app.stream(initial_state, thread_config, stream_mode="values"):
-        # Just loop to let it run. The print statements in nodes.py will show progress.
         pass
 
     # -----------------------------------------------------------------------
-    # INTERMISSION: HUMAN APPROVAL
+    # HUMAN REVIEW
     # -----------------------------------------------------------------------
     print("\n" + "="*60)
     print("✋ PAUSED FOR HUMAN REVIEW")
     print("="*60)
     
-    # Fetch the state (which is currently paused at Orchestrator)
     current_state = app.get_state(thread_config).values
     plan: Plan = current_state.get("plan")
     
@@ -195,75 +355,101 @@ def run_app():
         elif choice == 'n':
             feedback = input("📝 Enter your feedback (e.g., 'Add a section on Ethics'): ")
             
-            # CALL HELPER TO UPDATE PLAN
             new_plan = refine_plan_with_llm(plan, feedback)
-            
-            # UPDATE GRAPH STATE
             app.update_state(thread_config, {"plan": new_plan})
             
             print(f"\n✅ Plan Updated: '{new_plan.blog_title}'")
-            # Show new sections briefly
             for t in new_plan.tasks:
                  print(f"   - {t.title}")
             
             confirm = input("\nProceed with this new plan? (y/n): ").lower()
             if confirm == 'y':
                 break
-            # If 'n', loop continues
         else:
             print("Please enter 'y' or 'n'.")
 
     # -----------------------------------------------------------------------
-    # PASS 2: Resume Execution (Fanout -> Writers -> End)
+    # PASS 2: Resume Execution
     # -----------------------------------------------------------------------
     print(f"\n🚀 PHASE 2: WRITING & POLISHING...")
     print("-" * 60)
     
-    # Passing None resumes execution from where it paused
-    # Recursion limit high for map-reduce
     for event in app.stream(None, thread_config, stream_mode="values", recursion_limit=100):
         pass
 
     # -----------------------------------------------------------------------
-    # FINAL DISPLAY
+    # SAVE ALL CONTENT TO ORGANIZED FOLDERS
     # -----------------------------------------------------------------------
     final_state = app.get_state(thread_config).values
-    import re
-    # print("\n" + "="*80)
-    # print("✅ WORKFLOW COMPLETE")
-    # print("="*80)
-
+    
+    print("\n" + "="*80)
+    print("💾 SAVING ALL CONTENT TO ORGANIZED FOLDERS")
+    print("="*80)
+    
+    # Save everything
+    saved_files = save_blog_content(folders, final_state)
+    
+    # Generate README
+    readme_file = generate_readme(folders, saved_files, final_state)
+    
+    # -----------------------------------------------------------------------
+    # FINAL SUMMARY
+    # -----------------------------------------------------------------------
+    print("\n" + "="*80)
+    print("✅ WORKFLOW COMPLETE - ALL CONTENTS ORGANIZED")
+    print("="*80)
+    
     if final_state.get("final"):
         full_blog = final_state['final']
-        
-        # Count stats
         word_count = len(full_blog.split())
-        sections = re.findall(r'^##', full_blog, re.MULTILINE)
         
-        print(f"\n📊 Generated Blog Stats:")
-        print(f"   📝 {word_count:,} words")
-        print(f"   📑 {len(sections)} sections")
-        print(f"   ⏱️ ~{word_count // 200} min read")
+        print(f"\n📊 BLOG STATISTICS:")
+        print(f"   📝 Title: {plan.blog_title}")
+        print(f"   🎯 Audience: {plan.audience}")
+        print(f"   🎨 Tone: {plan.tone}")
+        print(f"   📈 Word Count: {word_count:,}")
+        print(f"   ⏱️ Estimated Read Time: {word_count // 200} minutes")
+        print(f"   📁 Saved to: {folders['base']}")
         
-        # Show preview
-        print(f"\n📄 PREVIEW (First 500 chars):")
+        # Show folder structure
+        print(f"\n📁 FOLDER STRUCTURE CREATED:")
+        for root, dirs, files in os.walk(folders['base']):
+            level = root.replace(folders['base'], '').count(os.sep)
+            indent = ' ' * 2 * level
+            print(f'{indent}{os.path.basename(root)}/')
+            subindent = ' ' * 2 * (level + 1)
+            for file in files[:5]:  # Show first 5 files
+                print(f'{subindent}{file}')
+            if len(files) > 5:
+                print(f'{subindent}... and {len(files)-5} more files')
+        
+        # Quick preview
+        print(f"\n📄 BLOG PREVIEW (First 300 chars):")
         print("-" * 60)
-        print(full_blog[:500])
-        print("\n... [See full blog in saved file] ...")
+        print(full_blog[:300] + "...")
         print("-" * 60)
         
-        # Show where saved
-        filename = f"{_safe_slug(final_state['plan'].blog_title)}.md"
-        print(f"\n💾 Complete blog saved to: {filename}")
+        # Show saved files
+        print(f"\n💾 FILES SAVED:")
+        for file_type, file_path in saved_files.items():
+            if isinstance(file_path, list):
+                for f in file_path:
+                    print(f"   📄 {os.path.basename(f)}")
+            else:
+                print(f"   📄 {os.path.basename(file_path)}")
+        
+        print(f"\n📖 Complete README: {readme_file}")
+        print(f"\n🎯 NEXT STEPS:")
+        print(f"   1. Open {saved_files.get('blog', 'blog.md')} to view the blog")
+        print(f"   2. Check {folders['social']}/ for social media posts")
+        print(f"   3. Review {saved_files.get('fact_check', 'fact_check.txt')} for quality report")
+        
+    else:
+        print("❌ No blog content generated.")
 
-    if final_state.get("linkedin_post"):
-        print(f"\n📱 LINKEDIN PREVIEW (First 200 chars):")
-        print(f"{final_state['linkedin_post']}...")
-
-    if final_state.get("fact_check_report"):
-        print(f"\n🕵️ FACT CHECK SUMMARY:")
-        # Show just first 300 chars of report
-        print(f"{final_state['fact_check_report']}...")
+    print("\n" + "="*80)
+    print("✨ All content saved in organized folders! ✨")
+    print("="*80)
 
 if __name__ == "__main__":
     run_app()

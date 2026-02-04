@@ -1,0 +1,20 @@
+{
+  "topic": "AI in Healthcare",
+  "as_of": "2026-02-04",
+  "mode": "open_book",
+  "generated_at": "2026-02-04T17:48:07.165832",
+  "word_count": 1145,
+  "file_paths": {
+    "blog": "blogs/ai_in_healthcare_20260204_174505/content/how_ai_is_revolutionizing_healthcare_in_2026_trends_and_applications.md",
+    "blog_clean": "blogs/ai_in_healthcare_20260204_174505/content/how_ai_is_revolutionizing_healthcare_in_2026_trends_and_applications_no_images.md",
+    "social": [
+      "blogs/ai_in_healthcare_20260204_174505/social_media/linkedin_how_ai_is_revolutionizing_healthcare_in_2026_trends_and_applications.txt",
+      "blogs/ai_in_healthcare_20260204_174505/social_media/youtube_how_ai_is_revolutionizing_healthcare_in_2026_trends_and_applications.txt",
+      "blogs/ai_in_healthcare_20260204_174505/social_media/facebook_how_ai_is_revolutionizing_healthcare_in_2026_trends_and_applications.txt"
+    ],
+    "fact_check": "blogs/ai_in_healthcare_20260204_174505/reports/fact_check.txt",
+    "quality_eval": "blogs/ai_in_healthcare_20260204_174505/reports/quality_evaluation.json",
+    "evidence": "blogs/ai_in_healthcare_20260204_174505/research/evidence.json",
+    "plan": "blogs/ai_in_healthcare_20260204_174505/metadata/plan.json"
+  }
+}

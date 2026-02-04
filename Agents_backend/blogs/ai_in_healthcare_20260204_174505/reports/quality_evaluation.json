@@ -1,0 +1,33 @@
+{
+  "final_score": 8.3,
+  "verdict": "\u2705 GOOD",
+  "metrics": {
+    "structure_score": 6,
+    "readability_score": 10,
+    "citation_score": 10,
+    "seo_score": 5,
+    "weights_used": {
+      "structure": 0.3,
+      "readability": 0.35,
+      "citations": 0.25,
+      "seo": 0.1
+    }
+  },
+  "raw_counts": {
+    "word_count": 1145,
+    "link_count": 13,
+    "unique_domains": 6
+  },
+  "ai_feedback": {
+    "strengths": [
+      "The blog provides a clear overview of the current state of AI in healthcare, supported by relevant statistics and trends, which helps establish credibility.",
+      "It effectively highlights the challenges faced by healthcare systems and how AI can address these issues, making the content relatable and informative for readers.",
+      "The structure is logical, with a clear introduction, body, and conclusion, guiding the reader through the topic in a coherent manner."
+    ],
+    "improvements": [
+      "Incorporate more specific examples or case studies of AI applications in healthcare to illustrate the points made and provide real-world context for readers.",
+      "Add a section discussing potential ethical concerns or challenges associated with AI in healthcare to provide a balanced perspective and engage readers in critical thinking."
+    ],
+    "overall": "Overall, the blog is informative and well-structured, but it could benefit from more concrete examples and a discussion of ethical considerations to enhance depth and engagement."
+  }
+}

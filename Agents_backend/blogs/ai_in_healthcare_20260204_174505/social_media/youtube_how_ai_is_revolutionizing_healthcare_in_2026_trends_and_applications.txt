@@ -1,0 +1,17 @@
+[0-3 sec, Face Camera, Energetic]:  
+"AI is transforming healthcare faster than you think!"
+
+[3-15 sec, Concerned Face, Problem Setup]:  
+"Healthcare faces rising costs, patient overload, and burnout. Traditional methods just can't keep up."
+
+[15-30 sec, Text Overlay "Tip 1: Multimodal AI", B-roll of medical images and data charts]:  
+"First, multimodal AI combines images, notes, and wearable data. This means more accurate diagnoses and personalized care."
+
+[30-40 sec, Text Overlay "Tip 2: Digital Twins", Animation of a virtual patient model]:  
+"Next, digital twins create virtual patient replicas. Doctors test treatments safely before real-world use, speeding up precision medicine."
+
+[40-50 sec, Text Overlay "Tip 3: AI Co-Pilots", Clip of a doctor using AI tools]:  
+"Then, AI co-pilots automate admin tasks like scheduling and documentation. This cuts burnout and frees up time for patients."
+
+[50-60 sec, Face Camera, Friendly]:  
+"Want the full AI healthcare revolution guide? Link in bio! Comment your favorite AI use, and subscribe for more tech insights."
