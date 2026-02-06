@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from datetime import date, datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -33,6 +34,29 @@ from Graph.nodes import (
     _safe_slug
 )
 from validators import TopicValidator
+
+# ===========================================================================
+# PODCAST IMPORT WITH FALLBACK
+# ===========================================================================
+try:
+    from Graph.podcast_studio import podcast_node
+    PODCAST_AVAILABLE = True
+    print("✅ Podcast module loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Podcast module not available: {e}")
+    PODCAST_AVAILABLE = False
+    
+    # Create a dummy podcast node that just skips audio generation
+    def podcast_node(state: dict) -> dict:
+        print("   ⚠️ Podcast generation skipped (module not available)")
+        return {"audio_path": None, "script_path": None}
+except Exception as e:
+    print(f"⚠️ Error loading podcast module: {e}")
+    PODCAST_AVAILABLE = False
+    
+    def podcast_node(state: dict) -> dict:
+        print("   ⚠️ Podcast generation skipped (error in module)")
+        return {"audio_path": None, "script_path": None}
 
 # ===========================================================================
 # HELPER: PLAN EDITOR (For Human Feedback)
@@ -140,7 +164,6 @@ def save_blog_content(folders: dict, state: State) -> dict:
         print(f"   🕵️ Fact check saved: {report_file}")
     
     if state.get("quality_evaluation"):
-        import json
         eval_file = f"{folders['reports']}/quality_evaluation.json"
         with open(eval_file, 'w', encoding='utf-8') as f:
             json.dump(state["quality_evaluation"], f, indent=2)
@@ -149,7 +172,6 @@ def save_blog_content(folders: dict, state: State) -> dict:
     
     # 5. Save research evidence
     if state.get("evidence"):
-        import json
         evidence_file = f"{folders['research']}/evidence.json"
         evidence_data = [e.model_dump() for e in state["evidence"]]
         with open(evidence_file, 'w', encoding='utf-8') as f:
@@ -157,20 +179,31 @@ def save_blog_content(folders: dict, state: State) -> dict:
         saved_files["evidence"] = evidence_file
         print(f"   🔍 Research evidence saved: {evidence_file}")
     
-    # 6. Save plan
+    # 6. Save podcast audio and script if available
+    if state.get("audio_path") and os.path.exists(state["audio_path"]):
+        saved_files["audio"] = state["audio_path"]
+        print(f"   🎙️ Podcast audio saved: {state['audio_path']}")
+    
+    if state.get("script_path") and os.path.exists(state["script_path"]):
+        saved_files["script"] = state["script_path"]
+        print(f"   📝 Podcast script saved: {state['script_path']}")
+    
+    # 7. Save plan
     if plan:
         plan_file = f"{folders['metadata']}/plan.json"
         with open(plan_file, 'w', encoding='utf-8') as f:
             f.write(plan.model_dump_json(indent=2))
         saved_files["plan"] = plan_file
     
-    # 7. Save metadata
+    # 8. Save metadata
     metadata = {
         "topic": state.get("topic"),
         "as_of": state.get("as_of"),
         "mode": state.get("mode"),
         "generated_at": datetime.now().isoformat(),
         "word_count": len(state.get("final", "").split()) if state.get("final") else 0,
+        "quality_score": state.get("quality_evaluation", {}).get("final_score", "N/A") if state.get("quality_evaluation") else "N/A",
+        "fact_check_score": state.get("fact_check_report", "N/A"),
         "file_paths": saved_files
     }
     
@@ -186,6 +219,31 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
     """Generate a README file for the blog package."""
     plan = state.get("plan")
     
+    # Extract fact check score
+    fact_check_text = state.get('fact_check_report', 'No fact check available')
+    fact_check_score = "N/A"
+    if "Score:" in fact_check_text:
+        # Extract score from "Score: 9/10"
+        import re
+        match = re.search(r'Score:\s*(\d+)/10', fact_check_text)
+        if match:
+            fact_check_score = match.group(1)
+    
+    # Extract quality score
+    quality_score = state.get("quality_evaluation", {}).get("final_score", "N/A") if state.get("quality_evaluation") else "N/A"
+    
+    # Build folder structure tree
+    folder_tree = ""
+    for root, dirs, files in os.walk(folders['base']):
+        level = root.replace(folders['base'], '').count(os.sep)
+        indent = ' ' * 2 * level
+        folder_tree += f'{indent}{os.path.basename(root)}/\n'
+        subindent = ' ' * 2 * (level + 1)
+        for file in files[:10]:  # Show first 10 files
+            folder_tree += f'{subindent}{file}\n'
+        if len(files) > 10:
+            folder_tree += f'{subindent}... and {len(files)-10} more files\n'
+    
     readme_content = f"""# {plan.blog_title if plan else 'Generated Blog'}
 
 ## 📋 Blog Information
@@ -194,6 +252,8 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 - **Target Audience**: {plan.audience if plan else 'N/A'}
 - **Tone**: {plan.tone if plan else 'N/A'}
 - **Word Count**: {len(state.get('final', '').split()) if state.get('final') else 0}
+- **Quality Score**: {quality_score}/10
+- **Fact Check Score**: {fact_check_score}/10
 
 ## 📁 Folder Structure
 
@@ -204,11 +264,16 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 1. **Main Blog**: Open `content/{_safe_slug(plan.blog_title)}.md` in any markdown viewer
 2. **Social Media**: Copy content from `social_media/` files
 3. **Reports**: Check `reports/` for quality analysis
+4. **Podcast**: Listen to `audio/` folder for generated podcast
 
 ## ⚙️ Generation Details
 - **Mode**: {state.get('mode', 'N/A')}
 - **Research Queries**: {len(state.get('queries', []))}
 - **Evidence Sources**: {len(state.get('evidence', []))}
+- **Podcast Generated**: {'Yes' if state.get('audio_path') else 'No'}
+
+## 📁 File Summary
+{chr(10).join(f'- {os.path.basename(f) if isinstance(f, str) else os.path.basename(f[0]) if isinstance(f, list) and f else "N/A"}' for f in saved_files.values() if f)}
 
 ---
 *Generated by AI Content Factory*
@@ -235,7 +300,6 @@ def build_graph(memory=None):
 
     # 2. Main Graph
     workflow = StateGraph(State)
-    from Graph.podcast_studio import podcast_node
 
     # Add Nodes
     workflow.add_node("router", router_node)
@@ -245,7 +309,17 @@ def build_graph(memory=None):
     workflow.add_node("reducer", reducer.compile()) 
     workflow.add_node("fact_checker", fact_checker_node)
     workflow.add_node("social_media", social_media_node)
-    workflow.add_node("audio_generator", podcast_node)
+    
+    # Add podcast node conditionally
+    if PODCAST_AVAILABLE:
+        workflow.add_node("audio_generator", podcast_node)
+    else:
+        # Create a dummy node that just passes through
+        def skip_audio_node(state):
+            print("   ⏭️ Skipping audio generation (not available)")
+            return {}
+        workflow.add_node("audio_generator", skip_audio_node)
+    
     workflow.add_node("evaluator", evaluator_node)
 
     # Edges
@@ -303,7 +377,7 @@ def run_app():
     print(f"   ✅ Base folder: {folders['base']}")
     
     # 4. Initial state with folder info
-    thread_config = {"configurable": {"thread_id": "1"}}
+    thread_config = {"configurable": {"thread_id": f"blog_{datetime.now().strftime('%Y%m%d_%H%M%S')}"}}
     
     initial_state = {
         "topic": topic,
@@ -411,6 +485,18 @@ def run_app():
         print(f"   ⏱️ Estimated Read Time: {word_count // 200} minutes")
         print(f"   📁 Saved to: {folders['base']}")
         
+        # Quality scores
+        if final_state.get("quality_evaluation"):
+            quality_score = final_state['quality_evaluation'].get('final_score', 'N/A')
+            print(f"   📊 Quality Score: {quality_score}/10")
+        
+        if final_state.get("fact_check_report"):
+            if "Score:" in final_state['fact_check_report']:
+                import re
+                match = re.search(r'Score:\s*(\d+)/10', final_state['fact_check_report'])
+                if match:
+                    print(f"   🕵️ Fact Check Score: {match.group(1)}/10")
+        
         # Show folder structure
         print(f"\n📁 FOLDER STRUCTURE CREATED:")
         for root, dirs, files in os.walk(folders['base']):
@@ -435,7 +521,7 @@ def run_app():
             if isinstance(file_path, list):
                 for f in file_path:
                     print(f"   📄 {os.path.basename(f)}")
-            else:
+            elif file_path and os.path.exists(file_path):
                 print(f"   📄 {os.path.basename(file_path)}")
         
         print(f"\n📖 Complete README: {readme_file}")
@@ -443,6 +529,9 @@ def run_app():
         print(f"   1. Open {saved_files.get('blog', 'blog.md')} to view the blog")
         print(f"   2. Check {folders['social']}/ for social media posts")
         print(f"   3. Review {saved_files.get('fact_check', 'fact_check.txt')} for quality report")
+        
+        if PODCAST_AVAILABLE and saved_files.get("audio"):
+            print(f"   4. Listen to podcast: {saved_files.get('audio')}")
         
     else:
         print("❌ No blog content generated.")
