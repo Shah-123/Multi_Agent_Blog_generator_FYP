@@ -271,7 +271,7 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
 
         client = genai.Client(api_key=api_key)
         resp = client.models.generate_content(
-            model="gemini-2.0-flash-exp", 
+            model="gemini-2.5-flash-image", 
             contents=prompt,
             config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
         )
