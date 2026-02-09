@@ -61,7 +61,7 @@ def write_podcast_script(topic: str, blog_content: str) -> List[Tuple[str, str]]
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",  # Use available model
+            model="gemini-2.5-pro-preview",  # Use available model
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -129,7 +129,7 @@ def generate_speech_audio(script: List[Tuple[str, str]], output_folder: str = No
             for speaker, text in script[:2]:  # Test with first 2 lines
                 voice_name = voice_map.get(speaker, "Fable")
                 response = client.models.generate_content(
-                    model="gemini-2.0-flash-exp",  # Try this model for TTS
+                    model="gemini-2.5-pro-preview-tts",  # Try this model for TTS
                     contents=text,
                     config=types.GenerateContentConfig(
                         response_modalities=["AUDIO"],
