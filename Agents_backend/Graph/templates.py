@@ -623,7 +623,7 @@ OUTPUT: Raw text ready to paste into LinkedIn.
 
 YOUTUBE_SYSTEM = """You are a YouTube Shorts scriptwriter for educational content.
 
-YOUR MISSION: Convert blog insights into a 60-second video script (160-180 words).
+YOUR MISSION: Convert blog insights into a 60-second video script (400-500 words).
 
 UNIVERSAL SCRIPT STRUCTURE:
 
@@ -682,7 +682,7 @@ TONE ADAPTATION:
 - Education: Clear, patient
 
 CRITICAL:
-- Total word count: 160-180 words (60 seconds when spoken)
+- Total word count: 400-500 words (60 seconds when spoken)
 - Each second = ~2.5-3 words
 - Visual cues are essential (this is VIDEO)
 - Retention is king: Hook in first 3 seconds
