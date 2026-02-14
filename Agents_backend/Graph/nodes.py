@@ -18,10 +18,8 @@ from Graph.state import (
     Plan, 
     Task, 
     EvidenceItem, 
-    GlobalImagePlan,
-    ImageSpec
+    GlobalImagePlan
 )
-# Note: Ensure you deleted the duplicate definitions in templates.py as advised!
 from Graph.templates import (
     ROUTER_SYSTEM, 
     RESEARCH_SYSTEM, 
@@ -36,8 +34,7 @@ from Graph.templates import (
 from Graph.structured_data import FactCheckReport
 
 # Initialize LLM
-# optimize: model="gpt-4o" is better for the Orchestrator, but "gpt-4o-mini" is cheaper
-llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 # ------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -53,9 +50,9 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
         out: List[dict] = []
         for r in results or []:
             out.append({
-                "title": r.get("title") or "",
-                "url": r.get("url") or "",
-                "snippet": r.get("content") or r.get("snippet") or "",
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": r.get("content") or r.get("snippet", ""),
                 "published_at": r.get("published_date") or r.get("published_at"),
                 "source": r.get("source"),
             })
@@ -65,6 +62,7 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
         return []
 
 def _safe_slug(title: str) -> str:
+    """Creates a filename-safe slug from a string."""
     s = title.strip().lower()
     s = re.sub(r"[^a-z0-9 _-]+", "", s)
     s = re.sub(r"\s+", "_", s).strip("_")
@@ -74,10 +72,8 @@ def _safe_slug(title: str) -> str:
 # 1. ROUTER NODE
 # ------------------------------------------------------------------
 def router_node(state: State) -> dict:
-    """Decides if we need research and what mode to run in."""
     print("--- 🚦 ROUTING ---")
     decider = llm.with_structured_output(RouterDecision)
-    
     as_of = state.get("as_of", date.today().isoformat())
     
     decision = decider.invoke([
@@ -85,7 +81,7 @@ def router_node(state: State) -> dict:
         HumanMessage(content=f"Topic: {state['topic']}\nAs-of date: {as_of}"),
     ])
 
-    # Determine context window (recency)
+    # Determine context window
     if decision.mode == "open_book":
         recency_days = 7
     elif decision.mode == "hybrid":
@@ -107,9 +103,7 @@ def router_node(state: State) -> dict:
 # 2. RESEARCH NODE
 # ------------------------------------------------------------------
 def research_node(state: State) -> dict:
-    """Performs web search and extracts structured evidence."""
     print("--- 🔍 RESEARCHING ---")
-    
     queries = (state.get("queries") or [])[:5] 
     raw_results: List[dict] = []
     
@@ -132,6 +126,7 @@ def research_node(state: State) -> dict:
         )),
     ])
 
+    # Deduplicate by URL
     dedup = {e.url: e for e in pack.evidence if e.url}
     evidence = list(dedup.values())
     
@@ -142,9 +137,7 @@ def research_node(state: State) -> dict:
 # 3. ORCHESTRATOR NODE (PLANNER)
 # ------------------------------------------------------------------
 def orchestrator_node(state: State) -> dict:
-    """Generates the blog plan/outline."""
     print("--- 📋 PLANNING ---")
-    
     planner = llm.with_structured_output(Plan)
     mode = state.get("mode", "closed_book")
     evidence = state.get("evidence", [])
@@ -166,8 +159,9 @@ def orchestrator_node(state: State) -> dict:
 # ------------------------------------------------------------------
 def fanout(state: State):
     """Generates parallel workers for each section."""
-    if not state["plan"]:
-        raise ValueError("No plan found in state!")
+    if not state.get("plan"):
+        print("⚠️ No plan found, skipping fanout.")
+        return []
         
     return [
         Send("worker", {
@@ -184,7 +178,6 @@ def fanout(state: State):
 # 5. WORKER NODE (WRITER)
 # ------------------------------------------------------------------
 def worker_node(payload: dict) -> dict:
-    """Writes a single section of the blog."""
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
@@ -192,7 +185,6 @@ def worker_node(payload: dict) -> dict:
     print(f"   ✍️ Writing Section: {task.title}")
 
     try:
-        # Format inputs for the LLM
         bullets_text = "\n- " + "\n- ".join(task.bullets)
         evidence_text = "\n".join(
             f"- {e.title} | {e.url} | {e.published_at or 'Unknown Date'}"
@@ -206,7 +198,7 @@ def worker_node(payload: dict) -> dict:
                 f"Section: {task.title}\n"
                 f"Goal: {task.goal}\n"
                 f"Target Words: {task.target_words}\n"
-                f"Tone: {plan.tone}\n"  # Added tone from plan
+                f"Tone: {plan.tone}\n"
                 f"Bullets to Cover:{bullets_text}\n\n"
                 f"Available Evidence (Cite these URLs):\n{evidence_text}\n"
             )),
@@ -215,21 +207,26 @@ def worker_node(payload: dict) -> dict:
         print(f"   ❌ Error in section {task.title}: {e}")
         section_md = f"## {task.title}\n\n[Error generating content: {str(e)}]"
 
-    # Return as a tuple (id, content) for re-sorting later
     return {"sections": [(task.id, section_md)]}
 
 # ------------------------------------------------------------------
-# 6. REDUCER: MERGE CONTENT
+# 6. REDUCER: MERGE CONTENT (FIXED: Deduplicates sections)
 # ------------------------------------------------------------------
 def merge_content(state: State) -> dict:
-    """Combines all written sections into one markdown document."""
     print("--- 🔗 MERGING SECTIONS ---")
     plan = state["plan"]
     
+    # --- FIX: DEDUPLICATION LOGIC ---
+    # Workers might append duplicates if the graph is resumed.
+    # We use a dictionary to keep only the LATEST content for each Task ID.
+    unique_sections = {}
+    for task_id, content in state["sections"]:
+        unique_sections[task_id] = content
+        
     # Sort by Task ID to ensure correct order
-    ordered_sections = [md for _, md in sorted(state["sections"], key=lambda x: x[0])]
+    ordered_content = [unique_sections[k] for k in sorted(unique_sections.keys())]
     
-    body = "\n\n".join(ordered_sections).strip()
+    body = "\n\n".join(ordered_content).strip()
     merged_md = f"# {plan.blog_title}\n\n{body}\n"
     
     return {"merged_md": merged_md}
@@ -238,7 +235,6 @@ def merge_content(state: State) -> dict:
 # 7. REDUCER: DECIDE IMAGES
 # ------------------------------------------------------------------
 def decide_images(state: State) -> dict:
-    """Decides where to place images in the merged text."""
     print("--- 🖼️ PLANNING IMAGES ---")
     planner = llm.with_structured_output(GlobalImagePlan)
     
@@ -261,7 +257,6 @@ def decide_images(state: State) -> dict:
 def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
     """Generates image using Google GenAI (Gemini)."""
     try:
-        # Lazy import to avoid crash if library missing
         from google import genai
         from google.genai import types
         
@@ -281,76 +276,68 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
                 if part.inline_data:
                     return part.inline_data.data
         return None
+    except ImportError:
+        print("   ⚠️ Google GenAI library not installed.")
+        return None
     except Exception as e:
         print(f"   ⚠️ Image Gen Error: {e}")
         return None
 
 def generate_and_place_images(state: State) -> dict:
-    """
-    Generates images if API key exists, otherwise saves text-only.
-    Also acts as the final 'Saver' node.
-    """
+    """Generates images, replaces placeholders, and returns final text."""
     print("--- 🎨 GENERATING IMAGES & SAVING ---")
     
     plan = state["plan"]
-    final_md = state.get("md_with_placeholders", state["merged_md"])
+    # Fallback to merged_md if image planning failed
+    final_md = state.get("md_with_placeholders", state.get("merged_md", ""))
     image_specs = state.get("image_specs", [])
+    
+    # Use the folder path passed in state, or default to current dir
+    base_path = state.get("blog_folder", ".")
+    assets_path = f"{base_path}/assets/images"
     
     # 1. Try to generate images
     if os.getenv("GOOGLE_API_KEY") and image_specs:
         print(f"   Attempting to generate {len(image_specs)} images...")
-        saved_images = []
         
+        # Create images dir if not exists
+        Path(assets_path).mkdir(parents=True, exist_ok=True)
+
         for img in image_specs:
             img_bytes = _generate_image_bytes_google(img["prompt"])
+            
             if img_bytes:
-                # Save image file
                 img_filename = _safe_slug(img["filename"])
-                # Ensure extension
                 if not img_filename.endswith(".png"): img_filename += ".png"
                 
-                # Create images dir if not exists
-                Path("generated_images").mkdir(exist_ok=True)
-                path = Path(f"generated_images/{img_filename}")
-                path.write_bytes(img_bytes)
+                full_path = Path(f"{assets_path}/{img_filename}")
+                full_path.write_bytes(img_bytes)
                 
-                # Replace placeholder in Markdown with actual image link
-                # Format: ![Alt Text](path/to/image.png)
-                rel_path = f"./generated_images/{img_filename}"
+                # Replace placeholder
+                # Use relative path for Markdown compatibility
+                rel_path = f"../assets/images/{img_filename}"
                 final_md = final_md.replace(
                     img["placeholder"], 
                     f"![{img['alt']}]({rel_path})\n*Figure: {img['caption']}*\n"
                 )
                 print(f"   ✅ Generated: {img_filename}")
             else:
-                print(f"   ❌ Failed to generate: {img['filename']}")
-                # Remove placeholder
+                print(f"   ❌ Failed: {img['filename']} (removing placeholder)")
                 final_md = final_md.replace(img["placeholder"], "")
     else:
-        print("   ⏭️ Skipped Image Generation (No API Key or no images planned)")
-        # Clean up placeholders if we skipped generation
+        print("   ⏭️ Skipped Image Generation (No API Key or no specs)")
+        # Clean up any remaining placeholders
         final_md = re.sub(r"\[\[IMAGE_\d+\]\]", "", final_md)
 
-    # 2. Save Final Markdown
-    final_filename = f"{_safe_slug(plan.blog_title)}.md"
-    Path(final_filename).write_text(final_md, encoding="utf-8")
-    
-    print(f"   ✅ Saved final blog to: {final_filename}")
-    
-    # Return 'final' key which subsequent nodes (FactCheck/Social) use
     return {"final": final_md}
 
 # ------------------------------------------------------------------
 # 9. FACT CHECKER NODE
 # ------------------------------------------------------------------
 def fact_checker_node(state: State) -> dict:
-    """Verifies the final blog content using structured template."""
     print("--- 🕵️ FACT CHECKING ---")
-    
-    # Use structured output for consistent reporting
     checker = llm.with_structured_output(FactCheckReport)
     
-    # Prepare evidence context
     evidence_summary = "\n".join([
         f"- {e.title} | {e.url}"
         for e in state.get("evidence", [])[:20]
@@ -364,71 +351,39 @@ def fact_checker_node(state: State) -> dict:
         ))
     ])
     
-    # Format for display/storage
-    report_text = f"""
-FACT CHECK REPORT
-═════════════════
-Score: {report.score}/10
-Verdict: {report.verdict}
-
-Issues Found: {len(report.issues)}
-"""
+    report_text = f"FACT CHECK REPORT\nScore: {report.score}/10\nVerdict: {report.verdict}\n"
     if report.issues:
-        report_text += "\nDETAILS:\n"
+        report_text += "\nISSUES FOUND:\n"
         for i, issue in enumerate(report.issues, 1):
-            report_text += f"{i}. [{issue.issue_type}] {issue.claim}\n   -> Fix: {issue.recommendation}\n"
+            report_text += f"{i}. [{issue.issue_type}] {issue.claim} -> Fix: {issue.recommendation}\n"
     
     print(f"   📊 Score: {report.score}/10 | Verdict: {report.verdict}")
     return {"fact_check_report": report_text}
 
 # ------------------------------------------------------------------
-# 10. SOCIAL MEDIA NODE (Professional Version)
+# 10. SOCIAL MEDIA NODE
 # ------------------------------------------------------------------
 def social_media_node(state: State) -> dict:
-    """Generates LinkedIn, YouTube, and Facebook content using professional templates."""
     print("--- 📱 GENERATING SOCIAL MEDIA PACK ---")
     
     blog_post = state["final"]
     topic = state["topic"]
-    
-    # Extract key stats for context
     evidence = state.get("evidence", [])
-    key_stats = "\n".join([
-        f"- {e.snippet[:100]}... ({e.url})"
-        for e in evidence[:5]
-    ])
     
-    context = f"""
-ORIGINAL BLOG TOPIC: {topic}
-BLOG CONTENT (excerpt):
-{blog_post[:5000]}
-
-KEY STATISTICS FROM RESEARCH:
-{key_stats}
-"""
+    key_stats = "\n".join([f"- {e.snippet[:100]}... ({e.url})" for e in evidence[:5]])
     
-    # 1. LinkedIn
-    print("   📝 Generating LinkedIn post...")
-    linkedin = llm.invoke([
-        SystemMessage(content=LINKEDIN_SYSTEM),
-        HumanMessage(content=context)
-    ]).content
+    # Construct Context Once
+    context = f"TOPIC: {topic}\nBLOG CONTENT:\n{blog_post[:4000]}\nSTATS:\n{key_stats}"
     
-    # 2. YouTube
-    print("   🎬 Generating YouTube script...")
-    youtube = llm.invoke([
-        SystemMessage(content=YOUTUBE_SYSTEM),
-        HumanMessage(content=context)
-    ]).content
+    # Parallelize calls ideally, but sequential is fine for now
+    linkedin = llm.invoke([SystemMessage(content=LINKEDIN_SYSTEM), HumanMessage(content=context)]).content
+    print("   ✅ LinkedIn Generated")
     
-    # 3. Facebook
-    print("   👥 Generating Facebook post...")
-    facebook = llm.invoke([
-        SystemMessage(content=FACEBOOK_SYSTEM),
-        HumanMessage(content=context)
-    ]).content
+    youtube = llm.invoke([SystemMessage(content=YOUTUBE_SYSTEM), HumanMessage(content=context)]).content
+    print("   ✅ YouTube Generated")
     
-    print("   ✅ Social Media Content Generated")
+    facebook = llm.invoke([SystemMessage(content=FACEBOOK_SYSTEM), HumanMessage(content=context)]).content
+    print("   ✅ Facebook Generated")
     
     return {
         "linkedin_post": linkedin,
@@ -440,19 +395,16 @@ KEY STATISTICS FROM RESEARCH:
 # 11. EVALUATOR NODE
 # ------------------------------------------------------------------
 def evaluator_node(state: State) -> dict:
-    """Scores the blog using your validator logic."""
     print("--- 📊 EVALUATING QUALITY ---")
-    
     try:
         from validators import BlogEvaluator
         evaluator = BlogEvaluator()
-        results = evaluator.evaluate(
-            blog_post=state["final"],
-            topic=state["topic"]
-        )
+        results = evaluator.evaluate(blog_post=state["final"], topic=state["topic"])
         print(f"   🏆 Final Score: {results.get('final_score')}/10")
         return {"quality_evaluation": results}
-        
     except ImportError:
         print("   ⚠️ Validators module not found, skipping evaluation.")
         return {"quality_evaluation": {"error": "Module missing"}}
+    except Exception as e:
+        print(f"   ⚠️ Evaluation Error: {e}")
+        return {"quality_evaluation": {"error": str(e)}}

@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, List, Optional, TypedDict, Union
+from typing import Annotated, List, Optional, TypedDict, Any
 from pydantic import BaseModel, Field
 
 # ============================================================================
@@ -58,41 +58,54 @@ class GlobalImagePlan(BaseModel):
 # 2. GRAPH STATE (THE MEMORY)
 # ============================================================================
 
-class State(TypedDict):
-    # INPUTS
-    topic: str
-    as_of: str  # Date string
+class State(TypedDict, total=False):
+    """
+    The central memory state of the graph.
+    'total=False' allows keys to be missing during initialization.
+    """
     
-    # ROUTER OUTPUTS
+    # --- Inputs ---
+    topic: str
+    as_of: str          # Date string
+    blog_folder: str    # Path to save outputs
+
+    # --- Router Outputs ---
     needs_research: bool
     mode: str
     queries: List[str]
     recency_days: int
-    
-    # RESEARCH OUTPUTS
-    evidence: List[EvidenceItem]  # Stores clean search results
-    
-    # PLANNING OUTPUTS
+
+    # --- Research Outputs ---
+    evidence: List[EvidenceItem]
+
+    # --- Planning Outputs ---
     plan: Plan
-    
-    # WORKER OUTPUTS (PARALLEL)
-    # CRITICAL: operator.add allows multiple workers to append to this list
-    # without overwriting each other.
-    sections: Annotated[List[tuple], operator.add] 
-    
-    # REDUCER OUTPUTS
-    merged_md: str           # Text combined from sections
+
+    # --- Worker Outputs (Parallel) ---
+    # CRITICAL: Annotated[..., operator.add] enables the "Fan-Out" pattern.
+    # It tells LangGraph: "When multiple nodes return 'sections', append them 
+    # to this list instead of overwriting."
+    sections: Annotated[List[tuple], operator.add]
+
+    # --- Reducer/Merger Outputs ---
+    merged_md: str            # Text combined from sections
     md_with_placeholders: str # Text with [[IMAGE_1]] tags
-    image_specs: List[dict]   # Instructions for image generator
     
-    # FINAL OUTPUTS
-    final: str               # The finished Markdown blog post
-    fact_check_report: str   # The audit report text
-    
-    # SOCIAL MEDIA OUTPUTS
+    # Note: We store dicts here because we use .model_dump() in nodes.py
+    image_specs: List[dict]   
+
+    # --- Final Outputs ---
+    final: str                # The finished Markdown blog post
+    fact_check_report: str    # The audit report text
+
+    # --- Social Media Outputs ---
     linkedin_post: str
     youtube_script: str
     facebook_post: str
-    
-    # EVALUATION
+
+    # --- Podcast Outputs ---
+    audio_path: Optional[str]   # Path to the MP3 file
+    script_path: Optional[str]  # Path to the text script
+
+    # --- Evaluation ---
     quality_evaluation: dict

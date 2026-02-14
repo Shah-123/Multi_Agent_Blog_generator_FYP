@@ -70,7 +70,7 @@ Example for "Future of Electric Vehicles":
 - "what are experts predicting for EVs?"
 - "electric car adoption statistics 2025"
 
-OUTPUT: Return RouterDecision JSON with needs_research, mode, reason, and queries.
+OUTPUT: Return  RouterDecision JSONwith needs_research, mode, reason, and queries.
 
 CRITICAL: Your decision affects the entire workflow. Be accurate.
 """
