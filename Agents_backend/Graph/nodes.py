@@ -32,6 +32,7 @@ from Graph.templates import (
     FACT_CHECKER_SYSTEM
 )
 from Graph.structured_data import FactCheckReport
+from Graph.keyword_optimizer import keyword_optimizer_node
 
 # Initialize LLM
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -134,24 +135,50 @@ def research_node(state: State) -> dict:
     return {"evidence": evidence}
 
 # ------------------------------------------------------------------
-# 3. ORCHESTRATOR NODE (PLANNER)
+# 3. ORCHESTRATOR NODE (PLANNER) - UPDATED WITH TONE & KEYWORDS
 # ------------------------------------------------------------------
 def orchestrator_node(state: State) -> dict:
     print("--- 📋 PLANNING ---")
     planner = llm.with_structured_output(Plan)
     mode = state.get("mode", "closed_book")
     evidence = state.get("evidence", [])
+    
+    # NEW: Get tone and keywords from state
+    target_tone = state.get("target_tone", "professional")
+    target_keywords = state.get("target_keywords", [])
+    
+    # Format keywords for prompt
+    keywords_str = ", ".join(target_keywords) if target_keywords else "None specified"
+    
+    # Build prompt with tone and keywords
+    prompt_content = f"""Topic: {state['topic']}
+Mode: {mode}
+Target Tone: {target_tone}
+Target Keywords: {keywords_str}
 
+Evidence Context:
+{[e.model_dump() for e in evidence][:10]}
+
+Create a blog plan that:
+1. Maintains '{target_tone}' tone consistently throughout all sections
+2. Naturally integrates these keywords: {keywords_str}
+3. Distributes keywords strategically across sections (avoid stuffing)
+4. Creates engaging, SEO-optimized content
+"""
+    
     plan = planner.invoke([
-        SystemMessage(content=ORCH_SYSTEM),
-        HumanMessage(content=(
-            f"Topic: {state['topic']}\n"
-            f"Mode: {mode}\n"
-            f"Evidence Context:\n{[e.model_dump() for e in evidence][:10]}"
+        SystemMessage(content=ORCH_SYSTEM.format(
+            tone=target_tone, 
+            keywords=keywords_str
         )),
+        HumanMessage(content=prompt_content),
     ])
     
     print(f"   Generated {len(plan.tasks)} sections.")
+    print(f"   🎨 Tone: {plan.tone}")
+    if plan.primary_keywords:
+        print(f"   🎯 Keywords: {', '.join(plan.primary_keywords)}")
+    
     return {"plan": plan}
 
 # ------------------------------------------------------------------
@@ -175,14 +202,14 @@ def fanout(state: State):
     ]
 
 # ------------------------------------------------------------------
-# 5. WORKER NODE (WRITER)
+# 5. WORKER NODE (WRITER) - UPDATED WITH TONE & KEYWORDS
 # ------------------------------------------------------------------
 def worker_node(payload: dict) -> dict:
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
     
-    print(f"   ✍️ Writing Section: {task.title}")
+    print(f"   ✍️ Writing Section: {task.title} (Tone: {plan.tone})")
 
     try:
         bullets_text = "\n- " + "\n- ".join(task.bullets)
@@ -190,17 +217,26 @@ def worker_node(payload: dict) -> dict:
             f"- {e.title} | {e.url} | {e.published_at or 'Unknown Date'}"
             for e in evidence[:15]
         )
+        
+        # NEW: Get keywords for this section
+        section_keywords = task.tags[:3]  # Use first 3 tags as keywords
+        keywords_str = ", ".join(section_keywords) if section_keywords else "general topic"
 
         section_md = llm.invoke([
-            SystemMessage(content=WORKER_SYSTEM),
+            SystemMessage(content=WORKER_SYSTEM.format(
+                tone=plan.tone,
+                keywords=keywords_str
+            )),
             HumanMessage(content=(
                 f"Blog Title: {plan.blog_title}\n"
                 f"Section: {task.title}\n"
                 f"Goal: {task.goal}\n"
                 f"Target Words: {task.target_words}\n"
-                f"Tone: {plan.tone}\n"
+                f"Tone: {plan.tone} (MAINTAIN THIS TONE CONSISTENTLY)\n"
+                f"Keywords to integrate naturally: {keywords_str}\n"
                 f"Bullets to Cover:{bullets_text}\n\n"
-                f"Available Evidence (Cite these URLs):\n{evidence_text}\n"
+                f"Available Evidence (Cite these URLs):\n{evidence_text}\n\n"
+                f"Remember: Write in {plan.tone} tone and naturally include the keywords."
             )),
         ]).content.strip()
     except Exception as e:
@@ -216,7 +252,7 @@ def merge_content(state: State) -> dict:
     print("--- 🔗 MERGING SECTIONS ---")
     plan = state["plan"]
     
-    # --- FIX: DEDUPLICATION LOGIC ---
+    # DEDUPLICATION LOGIC
     # Workers might append duplicates if the graph is resumed.
     # We use a dictionary to keep only the LATEST content for each Task ID.
     unique_sections = {}
@@ -228,6 +264,8 @@ def merge_content(state: State) -> dict:
     
     body = "\n\n".join(ordered_content).strip()
     merged_md = f"# {plan.blog_title}\n\n{body}\n"
+    
+    print(f"   ✅ Merged {len(ordered_content)} sections")
     
     return {"merged_md": merged_md}
 
@@ -266,7 +304,7 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
 
         client = genai.Client(api_key=api_key)
         resp = client.models.generate_content(
-            model="gemini-2.5-flash-image", 
+            model="gemini-2.0-flash-exp", 
             contents=prompt,
             config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
         )
@@ -351,11 +389,19 @@ def fact_checker_node(state: State) -> dict:
         ))
     ])
     
-    report_text = f"FACT CHECK REPORT\nScore: {report.score}/10\nVerdict: {report.verdict}\n"
+    report_text = f"FACT CHECK REPORT\n"
+    report_text += "=" * 60 + "\n"
+    report_text += f"Score: {report.score}/10\n"
+    report_text += f"Verdict: {report.verdict}\n\n"
+    
     if report.issues:
-        report_text += "\nISSUES FOUND:\n"
+        report_text += f"Issues Found: {len(report.issues)}\n\n"
+        report_text += "DETAILS:\n"
         for i, issue in enumerate(report.issues, 1):
-            report_text += f"{i}. [{issue.issue_type}] {issue.claim} -> Fix: {issue.recommendation}\n"
+            report_text += f"{i}. [{issue.issue_type}] {issue.claim}\n"
+            report_text += f"   -> Fix: {issue.recommendation}\n\n"
+    else:
+        report_text += "✅ No issues found!\n"
     
     print(f"   📊 Score: {report.score}/10 | Verdict: {report.verdict}")
     return {"fact_check_report": report_text}
