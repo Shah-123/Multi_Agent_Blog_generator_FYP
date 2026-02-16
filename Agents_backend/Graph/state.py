@@ -31,7 +31,7 @@ class Task(BaseModel):
     title: str = Field(description="Section H2 Title")
     goal: str = Field(description="What the reader should learn")
     bullets: List[str] = Field(description="Key points to cover")
-    target_words: int = Field(description="Approx word count")
+    target_words: int = Field(default=350, description="Approx word count (default 350)")
     tags: List[str] = Field(description="SEO tags for this section", default=[])
 
 class Plan(BaseModel):
@@ -40,6 +40,16 @@ class Plan(BaseModel):
     tone: str = Field(description="Tone of voice (e.g., 'professional', 'conversational')")
     audience: str = Field(description="Target audience")
     tasks: List[Task] = Field(description="List of sections to write")
+    
+    # NEW: Keyword optimization fields
+    primary_keywords: List[str] = Field(
+        description="Main SEO keywords to optimize for",
+        default=[]
+    )
+    keyword_strategy: str = Field(
+        description="How keywords will be distributed across sections",
+        default=""
+    )
 
 class ImageSpec(BaseModel):
     """Schema for a single image generation request."""
@@ -68,6 +78,9 @@ class State(TypedDict, total=False):
     topic: str
     as_of: str          # Date string
     blog_folder: str    # Path to save outputs
+    # NEW: Tone and keyword inputs
+    target_tone: Optional[str]        # e.g., "professional", "conversational"
+    target_keywords: List[str]        # e.g., ["AI healthcare", "medical automation"]
 
     # --- Router Outputs ---
     needs_research: bool
@@ -109,3 +122,7 @@ class State(TypedDict, total=False):
 
     # --- Evaluation ---
     quality_evaluation: dict
+    
+    # NEW: Keyword optimization outputs
+    keyword_analysis: dict      # Detailed keyword metrics
+    keyword_report: str         # Human-readable report
