@@ -201,15 +201,12 @@ def fanout(state: State):
         for task in state["plan"].tasks
     ]
 
-# ------------------------------------------------------------------
-# 5. WORKER NODE (WRITER) - UPDATED WITH TONE & KEYWORDS
-# ------------------------------------------------------------------
 def worker_node(payload: dict) -> dict:
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
     
-    print(f"   ✍️ Writing Section: {task.title} (Tone: {plan.tone})")
+    print(f"   ✍️ Writing Section {task.id + 1}/{len(plan.tasks)}: {task.title} (Tone: {plan.tone})")
 
     try:
         bullets_text = "\n- " + "\n- ".join(task.bullets)
@@ -218,35 +215,59 @@ def worker_node(payload: dict) -> dict:
             for e in evidence[:15]
         )
         
-        # NEW: Get keywords for this section
-        section_keywords = task.tags[:3]  # Use first 3 tags as keywords
+        section_keywords = task.tags[:3]
         keywords_str = ", ".join(section_keywords) if section_keywords else "general topic"
 
-        section_md = llm.invoke([
-            SystemMessage(content=WORKER_SYSTEM.format(
-                tone=plan.tone,
-                keywords=keywords_str
-            )),
-            HumanMessage(content=(
-                f"Blog Title: {plan.blog_title}\n"
-                f"Section: {task.title}\n"
-                f"Goal: {task.goal}\n"
-                f"Target Words: {task.target_words}\n"
-                f"Tone: {plan.tone} (MAINTAIN THIS TONE CONSISTENTLY)\n"
-                f"Keywords to integrate naturally: {keywords_str}\n"
-                f"Bullets to Cover:{bullets_text}\n\n"
-                f"Available Evidence (Cite these URLs):\n{evidence_text}\n\n"
-                f"Remember: Write in {plan.tone} tone and naturally include the keywords."
-            )),
-        ]).content.strip()
+        # INCREASED: max_tokens from default to 3000 for longer sections
+        response = llm.invoke(
+            [
+                SystemMessage(content=WORKER_SYSTEM.format(
+                    tone=plan.tone,
+                    keywords=keywords_str,
+                    target_words=task.target_words
+                )),
+                HumanMessage(content=(
+                    f"Blog Title: {plan.blog_title}\n"
+                    f"Section Number: {task.id + 1} of {len(plan.tasks)}\n"
+                    f"Section Title: {task.title}\n"
+                    f"Goal: {task.goal}\n"
+                    f"Target Words: {task.target_words}\n"
+                    f"Tone: {plan.tone} (MAINTAIN THIS TONE CONSISTENTLY)\n"
+                    f"Keywords to integrate naturally: {keywords_str}\n"
+                    f"Bullets to Cover:{bullets_text}\n\n"
+                    f"Available Evidence (Cite these URLs):\n{evidence_text}\n\n"
+                    f"CRITICAL INSTRUCTIONS:\n"
+                    f"1. Write EXACTLY {task.target_words} words (minimum)\n"
+                    f"2. Cover ALL bullet points completely\n"
+                    f"3. End with a complete sentence (period/question mark/exclamation)\n"
+                    f"4. DO NOT stop mid-sentence or mid-paragraph\n\n"
+                    f"Remember: Write in {plan.tone} tone throughout."
+                )),
+            ],
+            max_tokens=3000  # INCREASED from default (~1000)
+        )
+        
+        section_md = response.content.strip()
+        
+        # Validation
+        word_count = len(section_md.split())
+        if word_count < (task.target_words * 0.7):
+            print(f"   ⚠️ Section {task.id + 1} seems short ({word_count} words, target: {task.target_words})")
+        
+        if not section_md.endswith(('.', '!', '?', '"', ')')):
+            print(f"   ⚠️ Section {task.id + 1} incomplete (doesn't end with punctuation)")
+            section_md += "."
+        
+        print(f"   ✅ Completed: {word_count} words")
+        
     except Exception as e:
+        import traceback
         print(f"   ❌ Error in section {task.title}: {e}")
+        traceback.print_exc()
         section_md = f"## {task.title}\n\n[Error generating content: {str(e)}]"
 
     return {"sections": [(task.id, section_md)]}
-
-# ------------------------------------------------------------------
-# 6. REDUCER: MERGE CONTENT (FIXED: Deduplicates sections)
+# . REDUCER: MERGE CONTENT (FIXED: Deduplicates sections)
 # ------------------------------------------------------------------
 def merge_content(state: State) -> dict:
     print("--- 🔗 MERGING SECTIONS ---")
@@ -304,7 +325,7 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
 
         client = genai.Client(api_key=api_key)
         resp = client.models.generate_content(
-            model="gemini-2.0-flash-exp", 
+            model="gemini-2.5-flash-image", 
             contents=prompt,
             config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
         )
