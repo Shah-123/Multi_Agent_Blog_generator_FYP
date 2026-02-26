@@ -1,8 +1,23 @@
 import os
 import re
+import logging
 from datetime import date
 from typing import List, Optional
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+
+import requests
+from bs4 import BeautifulSoup
+
+# ------------------------------------------------------------------
+# LOGGING SETUP
+# ------------------------------------------------------------------
+logger = logging.getLogger("blog_pipeline")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG if os.getenv("DEBUG") else logging.INFO)
 
 # LangChain / LangGraph Imports
 from langgraph.types import Send
@@ -29,13 +44,25 @@ from Graph.templates import (
     LINKEDIN_SYSTEM,
     YOUTUBE_SYSTEM,
     FACEBOOK_SYSTEM,
-    FACT_CHECKER_SYSTEM
+    FACT_CHECKER_SYSTEM,
+    REVISION_SYSTEM
 )
 from Graph.structured_data import FactCheckReport
 from Graph.keyword_optimizer import keyword_optimizer_node
 
-# Initialize LLM
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+# ------------------------------------------------------------------
+# LLM MODEL TIERS (configurable via environment variables)
+# ------------------------------------------------------------------
+# Fast model: routing, research extraction, social media, image planning
+# Quality model: content writing, fact-checking, revision
+_FAST_MODEL = os.getenv("LLM_FAST_MODEL", "gpt-4o-mini")
+_QUALITY_MODEL = os.getenv("LLM_QUALITY_MODEL", "gpt-4o")
+
+llm_fast = ChatOpenAI(model=_FAST_MODEL, temperature=0)
+llm_quality = ChatOpenAI(model=_QUALITY_MODEL, temperature=0.1)
+
+# Backward compat alias — will remove eventually
+llm = llm_fast
 
 # ------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -43,7 +70,7 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
     """Safe Tavily search wrapper."""
     if not os.getenv("TAVILY_API_KEY"):
-        print("⚠️ TAVILY_API_KEY missing. Skipping search.")
+        logger.warning("TAVILY_API_KEY missing. Skipping search.")
         return []
     try:
         tool = TavilySearchResults(max_results=max_results)
@@ -59,7 +86,7 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
             })
         return out
     except Exception as e:
-        print(f"⚠️ Search failed for '{query}': {e}")
+        logger.warning(f"Search failed for '{query}': {e}")
         return []
 
 def _safe_slug(title: str) -> str:
@@ -73,7 +100,7 @@ def _safe_slug(title: str) -> str:
 # 1. ROUTER NODE
 # ------------------------------------------------------------------
 def router_node(state: State) -> dict:
-    print("--- 🚦 ROUTING ---")
+    logger.info("🚦 ROUTING ---")
     decider = llm.with_structured_output(RouterDecision)
     as_of = state.get("as_of", date.today().isoformat())
     
@@ -90,7 +117,7 @@ def router_node(state: State) -> dict:
     else:
         recency_days = 3650 # 10 years
 
-    print(f"   Mode: {decision.mode} | Research Needed: {decision.needs_research}")
+    logger.info(f"Mode: {decision.mode} | Research Needed: {decision.needs_research}")
     
     return {
         "needs_research": decision.needs_research,
@@ -100,45 +127,94 @@ def router_node(state: State) -> dict:
         "as_of": as_of
     }
 
+
+
+def scrape_full_webpage(url: str, max_words: int = 1500) -> str:
+    """Visits a URL and scrapes the actual article text."""
+    try:
+        # We use a standard browser User-Agent so websites don't block us
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove junk like scripts, styles, and footers
+        for script in soup(["script", "style", "nav", "footer", "aside"]):
+            script.decompose()
+
+        # Get the clean text
+        text = soup.get_text(separator=' ', strip=True)
+        
+        # Limit the text size so we don't blow up the LLM token limit
+        words = text.split()
+        return " ".join(words[:max_words])
+    
+    except Exception as e:
+        logger.warning(f"Failed to scrape {url}: {e}")
+        return ""
+
 # ------------------------------------------------------------------
 # 2. RESEARCH NODE
 # ------------------------------------------------------------------
 def research_node(state: State) -> dict:
-    print("--- 🔍 RESEARCHING ---")
-    queries = (state.get("queries") or [])[:5] 
-    raw_results: List[dict] = []
+    logger.info("🔍 DEEP RESEARCHING ---")
+    queries = (state.get("queries") or [])[:3] # Keep it to 3 searches to save time
+    
+    # 1. Gather URLs from Tavily
+    found_urls = set()
+    raw_results = []
     
     for q in queries:
-        print(f"   Searching: {q}")
-        raw_results.extend(_tavily_search(q, max_results=4))
+        logger.info(f"Searching: {q}")
+        results = _tavily_search(q, max_results=3)
+        for r in results:
+            if r['url'] not in found_urls:
+                found_urls.add(r['url'])
+                raw_results.append(r)
 
     if not raw_results:
-        print("   ⚠️ No results found.")
+        logger.warning("No results found.")
         return {"evidence": []}
 
-    print("   📊 Extracting Evidence...")
+    logger.info(f"🕸️ Scraping {len(raw_results[:5])} top articles...")
+    
+    # 2. Scrape the full text of the top 5 URLs
+    deep_evidence_context = ""
+    for idx, r in enumerate(raw_results[:5]):
+        logger.info(f"-> Reading: {r['url']}")
+        full_text = scrape_full_webpage(r['url'])
+        
+        if full_text:
+            deep_evidence_context += f"SOURCE {idx+1}: {r['title']} ({r['url']})\n"
+            deep_evidence_context += f"CONTENT: {full_text[:3000]}\n\n" # Send up to 3000 chars per site
+
+    logger.info("🧠 Analyzing full articles for hard evidence...")
+    
+    # 3. Give ALL the scraped text to the LLM to extract the best facts
     extractor = llm.with_structured_output(EvidencePack)
     pack = extractor.invoke([
         SystemMessage(content=RESEARCH_SYSTEM),
         HumanMessage(content=(
-            f"As-of date: {state['as_of']}\n"
-            f"Recency days: {state['recency_days']}\n\n"
-            f"Raw results:\n{str(raw_results)}" 
+            f"Topic: {state['topic']}\n"
+            f"Read the following full articles and extract ONLY hard facts, statistics, and verifiable claims.\n\n"
+            f"SCRAPED ARTICLES:\n{deep_evidence_context}" 
         )),
     ])
 
-    # Deduplicate by URL
-    dedup = {e.url: e for e in pack.evidence if e.url}
-    evidence = list(dedup.values())
+    evidence = list({e.url: e for e in pack.evidence if e.url}.values()) # Deduplicate
     
-    print(f"   ✅ Found {len(evidence)} evidence items.")
+    logger.info(f"✅ Extracted {len(evidence)} verified deep-evidence items.")
     return {"evidence": evidence}
+
 
 # ------------------------------------------------------------------
 # 3. ORCHESTRATOR NODE (PLANNER) - UPDATED WITH TONE & KEYWORDS
 # ------------------------------------------------------------------
 def orchestrator_node(state: State) -> dict:
-    print("--- 📋 PLANNING ---")
+    logger.info("📋 PLANNING ---")
     planner = llm.with_structured_output(Plan)
     mode = state.get("mode", "closed_book")
     evidence = state.get("evidence", [])
@@ -174,10 +250,10 @@ Create a blog plan that:
         HumanMessage(content=prompt_content),
     ])
     
-    print(f"   Generated {len(plan.tasks)} sections.")
-    print(f"   🎨 Tone: {plan.tone}")
+    logger.info(f"Generated {len(plan.tasks)} sections.")
+    logger.info(f"🎨 Tone: {plan.tone}")
     if plan.primary_keywords:
-        print(f"   🎯 Keywords: {', '.join(plan.primary_keywords)}")
+        logger.info(f"🎯 Keywords: {', '.join(plan.primary_keywords)}")
     
     return {"plan": plan}
 
@@ -187,7 +263,7 @@ Create a blog plan that:
 def fanout(state: State):
     """Generates parallel workers for each section."""
     if not state.get("plan"):
-        print("⚠️ No plan found, skipping fanout.")
+        logger.warning("No plan found, skipping fanout.")
         return []
         
     return [
@@ -206,12 +282,12 @@ def worker_node(payload: dict) -> dict:
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
     
-    print(f"   ✍️ Writing Section {task.id + 1}/{len(plan.tasks)}: {task.title} (Tone: {plan.tone})")
+    logger.info(f"✍️ Writing Section {task.id + 1}/{len(plan.tasks)}: {task.title} (Tone: {plan.tone})")
 
     try:
         bullets_text = "\n- " + "\n- ".join(task.bullets)
         evidence_text = "\n".join(
-            f"- {e.title} | {e.url} | {e.published_at or 'Unknown Date'}"
+            f"- [{e.title}]({e.url}) ({e.published_at or 'Unknown Date'})\n  Content: {e.snippet[:300]}"
             for e in evidence[:15]
         )
         
@@ -219,7 +295,7 @@ def worker_node(payload: dict) -> dict:
         keywords_str = ", ".join(section_keywords) if section_keywords else "general topic"
 
         # INCREASED: max_tokens from default to 3000 for longer sections
-        response = llm.invoke(
+        response = llm_quality.invoke(
             [
                 SystemMessage(content=WORKER_SYSTEM.format(
                     tone=plan.tone,
@@ -249,20 +325,28 @@ def worker_node(payload: dict) -> dict:
         
         section_md = response.content.strip()
         
+        # Normalize heading: strip any heading the LLM may have added, then prepend H2
+        lines = section_md.split('\n')
+        if lines and re.match(r'^#{1,4}\s+', lines[0]):
+            # LLM added its own heading — remove it, we'll add the correct one
+            lines = lines[1:]
+            section_md = '\n'.join(lines).strip()
+        section_md = f"## {task.title}\n\n{section_md}"
+        
         # Validation
         word_count = len(section_md.split())
         if word_count < (task.target_words * 0.7):
-            print(f"   ⚠️ Section {task.id + 1} seems short ({word_count} words, target: {task.target_words})")
+            logger.warning(f"Section {task.id + 1} seems short ({word_count} words, target: {task.target_words})")
         
         if not section_md.endswith(('.', '!', '?', '"', ')')):
-            print(f"   ⚠️ Section {task.id + 1} incomplete (doesn't end with punctuation)")
+            logger.warning(f"Section {task.id + 1} incomplete (doesn't end with punctuation)")
             section_md += "."
         
-        print(f"   ✅ Completed: {word_count} words")
+        logger.info(f"✅ Completed: {word_count} words")
         
     except Exception as e:
         import traceback
-        print(f"   ❌ Error in section {task.title}: {e}")
+        logger.error(f"Error in section {task.title}: {e}")
         traceback.print_exc()
         section_md = f"## {task.title}\n\n[Error generating content: {str(e)}]"
 
@@ -270,7 +354,7 @@ def worker_node(payload: dict) -> dict:
 # . REDUCER: MERGE CONTENT (FIXED: Deduplicates sections)
 # ------------------------------------------------------------------
 def merge_content(state: State) -> dict:
-    print("--- 🔗 MERGING SECTIONS ---")
+    logger.info("🔗 MERGING SECTIONS ---")
     plan = state["plan"]
     
     # DEDUPLICATION LOGIC
@@ -286,7 +370,7 @@ def merge_content(state: State) -> dict:
     body = "\n\n".join(ordered_content).strip()
     merged_md = f"# {plan.blog_title}\n\n{body}\n"
     
-    print(f"   ✅ Merged {len(ordered_content)} sections")
+    logger.info(f"✅ Merged {len(ordered_content)} sections")
     
     return {"merged_md": merged_md}
 
@@ -294,7 +378,7 @@ def merge_content(state: State) -> dict:
 # 7. REDUCER: DECIDE IMAGES
 # ------------------------------------------------------------------
 def decide_images(state: State) -> dict:
-    print("--- 🖼️ PLANNING IMAGES ---")
+    logger.info("🖼️ PLANNING IMAGES ---")
     planner = llm.with_structured_output(GlobalImagePlan)
     
     image_plan = planner.invoke([
@@ -335,15 +419,15 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
                     return part.inline_data.data
         return None
     except ImportError:
-        print("   ⚠️ Google GenAI library not installed.")
+        logger.warning("Google GenAI library not installed.")
         return None
     except Exception as e:
-        print(f"   ⚠️ Image Gen Error: {e}")
+        logger.warning(f"Image Gen Error: {e}")
         return None
 
 def generate_and_place_images(state: State) -> dict:
     """Generates images, replaces placeholders, and returns final text."""
-    print("--- 🎨 GENERATING IMAGES & SAVING ---")
+    logger.info("🎨 GENERATING IMAGES & SAVING ---")
     
     plan = state["plan"]
     final_md = state.get("merged_md", "")
@@ -355,7 +439,7 @@ def generate_and_place_images(state: State) -> dict:
     
     # 1. Try to generate images
     if os.getenv("GOOGLE_API_KEY") and image_specs:
-        print(f"   Attempting to generate {len(image_specs)} images...")
+        logger.info(f"Attempting to generate {len(image_specs)} images...")
         
         # Create images dir if not exists
         Path(assets_path).mkdir(parents=True, exist_ok=True)
@@ -377,8 +461,6 @@ def generate_and_place_images(state: State) -> dict:
                 # Find the target paragraph and inject the image AFTER IT
                 target_phrase = img.get("target_paragraph", "")
                 if target_phrase:
-                    # Escape regex characters just in case
-                    import re
                     # Look for the target phrase, then match until the end of that paragraph (double newline)
                     # We use a regex that finds the phrase, then any characters up to the next \n\n or end of string
                     escaped_phrase = re.escape(target_phrase)
@@ -390,17 +472,17 @@ def generate_and_place_images(state: State) -> dict:
                         # Replace the first occurrence: append the image right after the matched paragraph
                         final_md = pattern.sub(rf"\1{markdown_image}", final_md, count=1)
                     else:
-                        print(f"   ⚠️ Could not find target paragraph starting with '{target_phrase}', appending to end.")
+                        logger.warning(f"Could not find target paragraph starting with '{target_phrase}', appending to end.")
                         final_md += markdown_image
                 else:
                     final_md += markdown_image
 
-                print(f"   ✅ Generated: {img_filename}")
+                logger.info(f"✅ Generated: {img_filename}")
             else:
-                print(f"   ❌ Failed: {img['filename']} (skipping)")
+                logger.error(f"Failed: {img['filename']} (skipping)")
                 
     else:
-        print("   ⏭️ Skipped Image Generation (No API Key or no specs)")
+        logger.info("⏭️ Skipped Image Generation (No API Key or no specs)")
 
     return {"final": final_md}
 
@@ -408,12 +490,12 @@ def generate_and_place_images(state: State) -> dict:
 # 9. FACT CHECKER NODE
 # ------------------------------------------------------------------
 def fact_checker_node(state: State) -> dict:
-    print("--- 🕵️ FACT CHECKING ---")
-    checker = llm.with_structured_output(FactCheckReport)
+    logger.info("🕵️ FACT CHECKING ---")
+    checker = llm_quality.with_structured_output(FactCheckReport)
     
     evidence_summary = "\n".join([
-        f"- {e.title} | {e.url}"
-        for e in state.get("evidence", [])[:20]
+        f"- {e.title} ({e.url})\n  Content: {e.snippet[:500]}..."
+        for e in state.get("evidence", [])[:15]
     ])
     
     report = checker.invoke([
@@ -438,14 +520,77 @@ def fact_checker_node(state: State) -> dict:
     else:
         report_text += "✅ No issues found!\n"
     
-    print(f"   📊 Score: {report.score}/10 | Verdict: {report.verdict}")
-    return {"fact_check_report": report_text}
+    logger.info(f"📊 Score: {report.score}/10 | Verdict: {report.verdict}")
+    
+    # Store structured data for revision loop
+    issues_list = [
+        {"claim": issue.claim, "issue_type": issue.issue_type, "recommendation": issue.recommendation}
+        for issue in report.issues
+    ] if report.issues else []
+    
+    return {
+        "fact_check_report": report_text,
+        "fact_check_verdict": report.verdict,
+        "fact_check_issues": issues_list,
+        "fact_check_score": report.score,
+    }
+
+# ------------------------------------------------------------------
+# 9b. REVISION NODE (SELF-HEALING FACT-CHECK LOOP)
+# ------------------------------------------------------------------
+def revision_node(state: State) -> dict:
+    """Fixes flagged claims from the fact-checker using the REVISION_SYSTEM prompt."""
+    attempts = state.get("fact_check_attempts", 0)
+    logger.info(f"🔧 REVISING CONTENT (Attempt {attempts + 1})")
+    
+    issues = state.get("fact_check_issues", [])
+    if not issues:
+        logger.warning("No issues to fix, skipping revision.")
+        return {}
+    
+    # Format issues for the LLM
+    issues_text = "\n".join([
+        f"{i+1}. [{iss['issue_type']}] \"{iss['claim']}\"\n   Fix: {iss['recommendation']}"
+        for i, iss in enumerate(issues)
+    ])
+    
+    # Build evidence context for the revision agent
+    evidence = state.get("evidence", [])
+    evidence_text = "\n".join([
+        f"- [{e.title}]({e.url})\n  Content: {e.snippet[:400]}"
+        for e in evidence[:10]
+    ])
+    
+    response = llm_quality.invoke([
+        SystemMessage(content=REVISION_SYSTEM),
+        HumanMessage(content=(
+            f"ORIGINAL BLOG:\n{state['final']}\n\n"
+            f"FLAGGED ISSUES ({len(issues)} total):\n{issues_text}\n\n"
+            f"AVAILABLE EVIDENCE (use for citations):\n{evidence_text}"
+        )),
+    ], max_tokens=8000)
+    
+    revised = response.content.strip()
+    
+    # Basic sanity check: don't accept a drastically shorter revision
+    original_words = len(state.get("final", "").split())
+    revised_words = len(revised.split())
+    
+    if revised_words < (original_words * 0.7):
+        logger.warning(f"Revision too short ({revised_words} vs {original_words} words), keeping original.")
+        return {"fact_check_attempts": attempts + 1}
+    
+    logger.info(f"✅ Revised: {revised_words} words (was {original_words})")
+    return {
+        "final": revised,
+        "fact_check_attempts": attempts + 1,
+    }
 
 # ------------------------------------------------------------------
 # 10. SOCIAL MEDIA NODE
 # ------------------------------------------------------------------
 def social_media_node(state: State) -> dict:
-    print("--- 📱 GENERATING SOCIAL MEDIA PACK ---")
+    logger.info("📱 GENERATING SOCIAL MEDIA PACK ---")
     
     blog_post = state["final"]
     topic = state["topic"]
@@ -456,15 +601,22 @@ def social_media_node(state: State) -> dict:
     # Construct Context Once
     context = f"TOPIC: {topic}\nBLOG CONTENT:\n{blog_post[:4000]}\nSTATS:\n{key_stats}"
     
-    # Parallelize calls ideally, but sequential is fine for now
-    linkedin = llm.invoke([SystemMessage(content=LINKEDIN_SYSTEM), HumanMessage(content=context)]).content
-    print("   ✅ LinkedIn Generated")
+    # Parallel generation — all 3 platforms at once (~3x faster)
+    def _gen(system_prompt):
+        return llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=context)]).content
     
-    youtube = llm.invoke([SystemMessage(content=YOUTUBE_SYSTEM), HumanMessage(content=context)]).content
-    print("   ✅ YouTube Generated")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        linkedin_future = pool.submit(_gen, LINKEDIN_SYSTEM)
+        youtube_future  = pool.submit(_gen, YOUTUBE_SYSTEM)
+        facebook_future = pool.submit(_gen, FACEBOOK_SYSTEM)
     
-    facebook = llm.invoke([SystemMessage(content=FACEBOOK_SYSTEM), HumanMessage(content=context)]).content
-    print("   ✅ Facebook Generated")
+    linkedin = linkedin_future.result()
+    youtube  = youtube_future.result()
+    facebook = facebook_future.result()
+    
+    logger.info("✅ LinkedIn Generated")
+    logger.info("✅ YouTube Generated")
+    logger.info("✅ Facebook Generated")
     
     return {
         "linkedin_post": linkedin,
@@ -476,16 +628,16 @@ def social_media_node(state: State) -> dict:
 # 11. EVALUATOR NODE
 # ------------------------------------------------------------------
 def evaluator_node(state: State) -> dict:
-    print("--- 📊 EVALUATING QUALITY ---")
+    logger.info("📊 EVALUATING QUALITY ---")
     try:
         from validators import BlogEvaluator
         evaluator = BlogEvaluator()
         results = evaluator.evaluate(blog_post=state["final"], topic=state["topic"])
-        print(f"   🏆 Final Score: {results.get('final_score')}/10")
+        logger.info(f"🏆 Final Score: {results.get('final_score')}/10")
         return {"quality_evaluation": results}
     except ImportError:
-        print("   ⚠️ Validators module not found, skipping evaluation.")
+        logger.warning("Validators module not found, skipping evaluation.")
         return {"quality_evaluation": {"error": "Module missing"}}
     except Exception as e:
-        print(f"   ⚠️ Evaluation Error: {e}")
+        logger.warning(f"Evaluation Error: {e}")
         return {"quality_evaluation": {"error": str(e)}}
