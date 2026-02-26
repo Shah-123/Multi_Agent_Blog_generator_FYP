@@ -109,6 +109,12 @@ class State(TypedDict, total=False):
     # --- Final Outputs ---
     final: str                # The finished Markdown blog post
     fact_check_report: str    # The audit report text
+    
+    # --- Self-Healing Fact-Check Loop ---
+    fact_check_verdict: str          # "READY" or "NEEDS_REVISION"
+    fact_check_issues: List[dict]    # Structured list of flagged issues
+    fact_check_score: int            # 0-10 score from fact-checker
+    fact_check_attempts: int         # Retry counter (capped at 2)
 
     # --- Social Media Outputs ---
     linkedin_post: str
@@ -120,6 +126,9 @@ class State(TypedDict, total=False):
     script_path: Optional[str]  # Path to the text script
 
     # --- Evaluation ---
+    completion_report: str          # Text report from validator
+    completion_score: int           # 0-10 completeness score
+    completion_issues: List[dict]   # Structured list of issues
     quality_evaluation: dict
     
     # NEW: Keyword optimization outputs
