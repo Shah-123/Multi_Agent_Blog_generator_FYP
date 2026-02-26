@@ -21,9 +21,9 @@ def validate_completion(state: dict) -> dict:
     
     issues = []
     
-    # 1. Check if all sections exist
+    # 1. Check if all sections exist (Looking for H2, H3, or H4)
     expected_sections = len(plan.tasks)
-    actual_sections = len(re.findall(r'^## ', final_text, re.MULTILINE))
+    actual_sections = len(re.findall(r'^#{2,4} ', final_text, re.MULTILINE))
     
     if actual_sections < expected_sections:
         issues.append(f"Missing sections: Expected {expected_sections}, found {actual_sections}")
@@ -33,10 +33,15 @@ def validate_completion(state: dict) -> dict:
     paragraphs = final_text.split('\n\n')
     for i, para in enumerate(paragraphs):
         para = para.strip()
-        if para and len(para) > 50:  # Ignore short lines
-            if not para.endswith(('.', '!', '?', '"', ')')):
+        # Skip image blocks and headers
+        if para.startswith('![') or para.startswith('#'):
+            continue
+        # Strip markdown formatting at the end before checking punctuation
+        clean_para = para.strip().strip('*_` ')
+        if clean_para and len(clean_para) > 50:  # Ignore short lines
+            if not clean_para.endswith(('.', '!', '?', '"', ')')):
                 issues.append(f"Paragraph {i+1} may be incomplete")
-                print(f"   ⚠️ Incomplete paragraph detected")
+                print(f"   ⚠️ Incomplete paragraph detected: {clean_para[-20:]}")
     
     # 3. Check word count
     total_words = len(final_text.split())

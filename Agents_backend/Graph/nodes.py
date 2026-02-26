@@ -301,12 +301,11 @@ def decide_images(state: State) -> dict:
         SystemMessage(content=DECIDE_IMAGES_SYSTEM),
         HumanMessage(content=(
             f"Topic: {state['topic']}\n"
-            f"Current Blog Content:\n{state['merged_md'][:10000]}..." 
+            f"Current Blog Content:\n{state['merged_md']}" 
         )),
     ])
 
     return {
-        "md_with_placeholders": image_plan.md_with_placeholders,
         "image_specs": [img.model_dump() for img in image_plan.images],
     }
 
@@ -347,8 +346,7 @@ def generate_and_place_images(state: State) -> dict:
     print("--- 🎨 GENERATING IMAGES & SAVING ---")
     
     plan = state["plan"]
-    # Fallback to merged_md if image planning failed
-    final_md = state.get("md_with_placeholders", state.get("merged_md", ""))
+    final_md = state.get("merged_md", "")
     image_specs = state.get("image_specs", [])
     
     # Use the folder path passed in state, or default to current dir
@@ -372,21 +370,37 @@ def generate_and_place_images(state: State) -> dict:
                 full_path = Path(f"{assets_path}/{img_filename}")
                 full_path.write_bytes(img_bytes)
                 
-                # Replace placeholder
                 # Use relative path for Markdown compatibility
                 rel_path = f"../assets/images/{img_filename}"
-                final_md = final_md.replace(
-                    img["placeholder"], 
-                    f"![{img['alt']}]({rel_path})\n*Figure: {img['caption']}*\n"
-                )
+                markdown_image = f"\n\n![{img['alt']}]({rel_path})\n*Figure: {img['caption']}*\n\n"
+                
+                # Find the target paragraph and inject the image AFTER IT
+                target_phrase = img.get("target_paragraph", "")
+                if target_phrase:
+                    # Escape regex characters just in case
+                    import re
+                    # Look for the target phrase, then match until the end of that paragraph (double newline)
+                    # We use a regex that finds the phrase, then any characters up to the next \n\n or end of string
+                    escaped_phrase = re.escape(target_phrase)
+                    # Pattern: escaped_phrase + anything (non-greedy) + (\n\n or end of string)
+                    pattern = re.compile(rf"({escaped_phrase}.*?(?:\n\n|\Z))", re.DOTALL)
+                    
+                    # Check if it matches
+                    if pattern.search(final_md):
+                        # Replace the first occurrence: append the image right after the matched paragraph
+                        final_md = pattern.sub(rf"\1{markdown_image}", final_md, count=1)
+                    else:
+                        print(f"   ⚠️ Could not find target paragraph starting with '{target_phrase}', appending to end.")
+                        final_md += markdown_image
+                else:
+                    final_md += markdown_image
+
                 print(f"   ✅ Generated: {img_filename}")
             else:
-                print(f"   ❌ Failed: {img['filename']} (removing placeholder)")
-                final_md = final_md.replace(img["placeholder"], "")
+                print(f"   ❌ Failed: {img['filename']} (skipping)")
+                
     else:
         print("   ⏭️ Skipped Image Generation (No API Key or no specs)")
-        # Clean up any remaining placeholders
-        final_md = re.sub(r"\[\[IMAGE_\d+\]\]", "", final_md)
 
     return {"final": final_md}
 

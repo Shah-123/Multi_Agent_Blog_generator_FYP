@@ -53,7 +53,7 @@ class Plan(BaseModel):
 
 class ImageSpec(BaseModel):
     """Schema for a single image generation request."""
-    placeholder: str = Field(description="e.g., [[IMAGE_1]]")
+    target_paragraph: str = Field(description="The exact first 5 words of the paragraph after which this image should be inserted")
     filename: str = Field(description="dashed-slug-filename")
     prompt: str = Field(description="Detailed prompt for the image generator")
     alt: str = Field(description="Alt text for accessibility")
@@ -61,7 +61,6 @@ class ImageSpec(BaseModel):
 
 class GlobalImagePlan(BaseModel):
     """Schema for the image placement strategy."""
-    md_with_placeholders: str = Field(description="The full blog markdown with [[IMAGE_N]] placeholders inserted")
     images: List[ImageSpec] = Field(description="List of images to generate")
 
 # ============================================================================
