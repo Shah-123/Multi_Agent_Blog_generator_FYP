@@ -4,14 +4,17 @@ import uuid
 import asyncio
 import sqlite3
 import secrets
+import time
+import re as re_module
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
+from collections import defaultdict
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Security, Depends
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Security, Depends, WebSocket, WebSocketDisconnect
 from fastapi.security.api_key import APIKeyHeader
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,7 +25,9 @@ load_dotenv()
 
 from main import create_blog_structure, save_blog_content, generate_readme, build_graph
 from Graph.state import State
+from Graph.templates import TOPIC_SUGGESTIONS_SYSTEM
 from validators import TopicValidator
+from event_bus import subscribe, unsubscribe, emit as _emit, get_history
 
 # ============================================================================
 # AUTH
@@ -49,6 +54,26 @@ async def require_api_key(api_key: str = Security(_api_key_header)):
     return api_key
 
 # ============================================================================
+# RATE LIMITING (in-memory, per API key)
+# ============================================================================
+
+_RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "10"))  # max requests/min
+_rate_store: Dict[str, list] = defaultdict(list)
+
+def _check_rate_limit(api_key: str):
+    """Raises 429 if the key has exceeded the rate limit."""
+    now = time.time()
+    window = [t for t in _rate_store[api_key] if now - t < 60]
+    _rate_store[api_key] = window
+    if len(window) >= _RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded ({_RATE_LIMIT} requests/min). Try again later.",
+            headers={"Retry-After": "60"},
+        )
+    _rate_store[api_key].append(now)
+
+# ============================================================================
 # FASTAPI APP
 # ============================================================================
 
@@ -61,19 +86,23 @@ app = FastAPI(
 )
 
 # Restrict CORS to your actual frontend origin in production.
-# Replace the placeholder below or set ALLOWED_ORIGIN in .env.
-_allowed_origin = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000")
+_allowed_origins = [
+    os.getenv("ALLOWED_ORIGIN", "http://localhost:3000"),
+    "http://localhost:8000",  # Same-origin for embedded frontend
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[_allowed_origin],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 os.makedirs("static", exist_ok=True)
+os.makedirs("frontend", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
 # ============================================================================
 # SQLITE JOB MANAGER
@@ -244,6 +273,20 @@ class BlogRequest(BaseModel):
     include_podcast: bool = Field(True)
     tone: Optional[str] = None
     audience: Optional[str] = None
+    
+    @classmethod
+    def _sanitize_topic(cls, v: str) -> str:
+        # Strip HTML tags
+        v = re_module.sub(r'<[^>]+>', '', v)
+        # Collapse whitespace
+        v = re_module.sub(r'\s+', ' ', v).strip()
+        # Block obvious prompt injection attempts
+        injection_patterns = ['ignore previous', 'system prompt', 'you are now', 'disregard']
+        lower = v.lower()
+        for pattern in injection_patterns:
+            if pattern in lower:
+                raise ValueError(f"Topic contains blocked pattern: '{pattern}'")
+        return v
 
 class ApproveRequest(BaseModel):
     feedback: Optional[str] = Field(
@@ -284,12 +327,15 @@ async def _phase1_research_and_plan(job_id: str, topic: str, settings: dict):
             "as_of":       date.today().isoformat(),
             "sections":    [],
             "blog_folder": folders["base"],
+            "_job_id":     job_id,
         }
 
         app_graph = build_graph(memory=memory)    # pass the SAME memory object
         thread    = _thread_config(job_id)
 
         # Stream phase 1 — graph will pause after orchestrator
+        _emit(job_id, "pipeline", "started", "Blog generation pipeline started")
+
         for event in app_graph.stream(initial_state, thread, stream_mode="values"):
             if event.get("needs_research") is not None:
                 job_manager.update_progress(job_id, "research")
@@ -358,6 +404,8 @@ async def _phase2_write(job_id: str, folders: dict = None, feedback: Optional[st
             if event.get("quality_evaluation"):
                 job_manager.update_progress(job_id, "evaluation")
 
+        _emit(job_id, "pipeline", "completed", "Blog generation complete!")
+
         final_state = app_graph.get_state(thread).values
 
         # Reconstruct folders path if we're resuming via the approve endpoint
@@ -400,13 +448,22 @@ async def _phase2_write(job_id: str, folders: dict = None, feedback: Optional[st
             "folder_path":     folders["base"],
             "files": {
                 "blog":         [os.path.basename(f) for f in [saved_files.get("blog")] if f],
-                "social_media": [os.path.basename(f) for f in saved_files.get("social", [])],
+                "assets":       [os.path.basename(f) for f in [
+                                   saved_files.get("linkedin"), saved_files.get("facebook"), 
+                                   saved_files.get("youtube"), saved_files.get("twitter"), 
+                                   saved_files.get("email"), saved_files.get("landing_page")] if f],
                 "reports":      [os.path.basename(f) for f in
                                  [saved_files.get("fact_check"), saved_files.get("quality_eval")] if f],
-                "assets":       [os.path.basename(f) for f in [saved_files.get("audio")] if f],
+                "audio":        [os.path.basename(f) for f in [saved_files.get("audio")] if f],
             },
             "download_url":  f"/api/download/{job_id}",
             "generated_at":  datetime.now().isoformat(),
+            "email_sequence": final_state.get("email_sequence", ""),
+            "twitter_thread": final_state.get("twitter_thread", ""),
+            "landing_page":   final_state.get("landing_page", ""),
+            "linkedin_post":  final_state.get("linkedin_post", ""),
+            "facebook_post":  final_state.get("facebook_post", ""),
+            "youtube_script": final_state.get("youtube_script", ""),
         }
 
         import re
@@ -440,12 +497,20 @@ def _create_zip(folder_path: str, job_id: str) -> str:
 
 @app.get("/")
 async def root():
+    """Serve the frontend UI."""
+    response = FileResponse("frontend/index.html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+@app.get("/api")
+async def api_root():
     return {
         "service": "AI Content Factory API",
         "version": "2.0.0",
         "auth": "All write endpoints require X-API-Key header",
         "endpoints": {
             "generate":  "POST /api/generate",
+            "suggest":   "POST /api/suggest",
             "status":    "GET  /api/status/{job_id}",
             "approve":   "POST /api/jobs/{job_id}/approve",
             "download":  "GET  /api/download/{job_id}",
@@ -453,6 +518,40 @@ async def root():
             "health":    "GET  /api/health",
         }
     }
+
+
+@app.get("/api/suggest")
+async def suggest_topics():
+    """
+    Returns 4 highly engaging, trending blog topic suggestions.
+    No auth required — called on frontend load.
+    """
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage
+    from pydantic import BaseModel, Field
+    
+    class TopicSuggestions(BaseModel):
+        suggestions: List[str] = Field(description="List of exactly 4 strings")
+
+    try:
+        llm_fast = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+        editor = llm_fast.with_structured_output(TopicSuggestions)
+        
+        # We use a slightly higher temperature (0.7) so it gives different ideas each time.
+        response = editor.invoke([
+            SystemMessage(content=TOPIC_SUGGESTIONS_SYSTEM)
+        ])
+        
+        return {"suggestions": response.suggestions[:4]}
+    except Exception as e:
+        print(f"Suggestion API failed: {e}")
+        # Fallback suggestions if API fails
+        return {"suggestions": [
+            "10 AI Tools Every Developer Needs in 2026",
+            "How to Build a Scalable SaaS Architecture",
+            "The Future of Multi-Agent Systems",
+            "Mastering Python for Generative AI"
+        ]}
 
 
 @app.get("/api/health")
@@ -483,6 +582,7 @@ async def generate_blog(
     - If auto_approve=False the job pauses after planning with
       status='awaiting_approval'. Call POST /api/jobs/{job_id}/approve to resume.
     """
+    _check_rate_limit(_key)
     settings = {
         "auto_approve":    request.auto_approve,
         "include_images":  request.include_images,
@@ -589,6 +689,21 @@ async def get_job_status(job_id: str):
 
     if job["status"] == "completed":
         response["result"] = job["result"]
+        # Attach the actual markdown content so the UI can render it
+        try:
+            folder = job["result"].get("folder_path")
+            blog_files = job["result"].get("files", {}).get("blog", [])
+            if folder and blog_files:
+                blog_path = os.path.join(folder, "content", blog_files[0])
+                if os.path.exists(blog_path):
+                    with open(blog_path, "r", encoding="utf-8") as f:
+                        response["result"]["content"] = f.read()
+                else:
+                    response["result"]["content"] = f"Error: {blog_files[0]} not found on disk."
+            else:
+                response["result"]["content"] = "Error: Blog file path not available."
+        except Exception as e:
+            response["result"]["content"] = f"Error reading blog.md: {e}"
 
     return response
 
@@ -655,6 +770,42 @@ async def delete_job(
 
 
 # ============================================================================
+# WEBSOCKET — REAL-TIME AGENT EVENTS
+# ============================================================================
+
+@app.websocket("/ws/jobs/{job_id}")
+async def websocket_agent_events(websocket: WebSocket, job_id: str):
+    """
+    Stream real-time agent events for a job.
+    Connect to ws://localhost:8000/ws/jobs/{job_id} to receive live updates.
+    """
+    await websocket.accept()
+    queue = subscribe(job_id)
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                await websocket.send_json(event)
+            except asyncio.TimeoutError:
+                # Send heartbeat to keep connection alive
+                try:
+                    await websocket.send_json({"type": "heartbeat"})
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        unsubscribe(job_id, queue)
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def get_job_events(job_id: str):
+    """Get all past events for a job (for history replay). No auth required."""
+    return {"job_id": job_id, "events": get_history(job_id)}
+
+# ============================================================================
 # STARTUP / DIRECTORIES
 # ============================================================================
 
@@ -664,5 +815,6 @@ os.makedirs("static/downloads", exist_ok=True)
 if __name__ == "__main__":
     import uvicorn
     print("Starting AI Content Factory API v2 ...")
+    print("UI:    http://localhost:8000")
     print("Docs:  http://localhost:8000/docs")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, port=8000)

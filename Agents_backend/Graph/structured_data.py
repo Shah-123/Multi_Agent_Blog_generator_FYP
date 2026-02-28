@@ -11,6 +11,10 @@ class FactCheckIssue(BaseModel):
     issue_type: Literal["citation_missing", "hallucination", "contradiction", "other"] = Field(
         description="Category of the issue"
     )
+    severity: Literal["critical", "minor", "suggestion"] = Field(
+        default="minor",
+        description="critical=must fix, minor=should fix, suggestion=optional"
+    )
     recommendation: str = Field(description="How to fix the issue")
 
 class FactCheckReport(BaseModel):

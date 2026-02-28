@@ -29,8 +29,9 @@ from Graph.nodes import (
     merge_content, 
     decide_images, 
     generate_and_place_images,
-    fact_checker_node, 
-    social_media_node, 
+    fact_checker_node,
+    revision_node,
+    campaign_generator_node, 
     evaluator_node,
     _safe_slug
 )
@@ -183,18 +184,29 @@ def save_blog_content(folders: dict, state: State) -> dict:
         saved["blog"] = path
         print(f"   ✅ Saved blog: {os.path.basename(path)}")
 
-    # 2. Social
-    for platform in ["linkedin", "facebook"]:
-        key = f"{platform}_post"
+    # 2. Campaign Assets
+    for platform in ["linkedin", "facebook", "youtube", "twitter", "email", "landing_page"]:
+        # Match the state keys correctly
+        if platform == "youtube":
+            key = "youtube_script"
+            ext = "txt"
+        elif platform == "email":
+            key = "email_sequence"
+            ext = "md"
+        elif platform == "twitter":
+            key = "twitter_thread"
+            ext = "md"
+        elif platform == "landing_page":
+            key = "landing_page"
+            ext = "md"
+        else:
+            key = f"{platform}_post"
+            ext = "txt"
+            
         if state.get(key):
-            path = f"{folders['social']}/{platform}_{slug}.txt"
+            path = f"{folders['social']}/{platform}_{slug}.{ext}"
             Path(path).write_text(state[key], encoding="utf-8")
             saved[platform] = path
-            
-    if state.get("youtube_script"):
-        path = f"{folders['social']}/youtube_{slug}.txt"
-        Path(path).write_text(state["youtube_script"], encoding="utf-8")
-        saved["youtube"] = path
 
     # 3. Reports
     if state.get("fact_check_report"):
@@ -249,7 +261,7 @@ def save_blog_content(folders: dict, state: State) -> dict:
         "target_keywords": state.get("target_keywords", []),
         "file_paths": {
             "blog": saved.get("blog"),
-            "social": [saved.get(k) for k in ["linkedin", "youtube", "facebook"] if saved.get(k)],
+            "assets": [saved.get(k) for k in ["linkedin", "youtube", "facebook", "twitter", "email", "landing_page"] if saved.get(k)],
             "fact_check": saved.get("fact_check"),
             "keyword_report": saved.get("keyword_report"),
             "completion_report": saved.get("completion_report"),
@@ -296,8 +308,9 @@ def build_graph(memory=None):
     workflow.add_node("reducer", reducer.compile()) 
     workflow.add_node("completion_validator", validate_completion)
     workflow.add_node("fact_checker", fact_checker_node)
+    workflow.add_node("revision", revision_node)
     workflow.add_node("keyword_optimizer", keyword_optimizer_node)
-    workflow.add_node("social_media", social_media_node)
+    workflow.add_node("campaign_generator", campaign_generator_node)
     
     if PODCAST_AVAILABLE:
         workflow.add_node("audio_generator", podcast_node)
@@ -316,9 +329,22 @@ def build_graph(memory=None):
     workflow.add_edge("worker", "reducer")
     workflow.add_edge("reducer", "completion_validator")
     workflow.add_edge("completion_validator", "fact_checker")
-    workflow.add_edge("fact_checker", "keyword_optimizer")
-    workflow.add_edge("keyword_optimizer", "social_media")
-    workflow.add_edge("social_media", "audio_generator")
+    
+    # SELF-HEALING LOOP: fact_checker → revision (if issues) → fact_checker
+    def fact_check_router(state):
+        verdict = state.get("fact_check_verdict", "READY")
+        attempts = state.get("fact_check_attempts", 0)
+        if verdict == "NEEDS_REVISION" and attempts < 2:
+            return "revision"
+        return "keyword_optimizer"
+    
+    workflow.add_conditional_edges("fact_checker", fact_check_router,
+        ["revision", "keyword_optimizer"]
+    )
+    workflow.add_edge("revision", "fact_checker")  # Loop back for re-check
+    
+    workflow.add_edge("keyword_optimizer", "campaign_generator")
+    workflow.add_edge("campaign_generator", "audio_generator")
     workflow.add_edge("audio_generator", "evaluator")
     workflow.add_edge("evaluator", END)
 

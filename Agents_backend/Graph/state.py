@@ -119,10 +119,13 @@ class State(TypedDict, total=False):
     fact_check_score: int            # 0-10 score from fact-checker
     fact_check_attempts: int         # Retry counter (capped at 2)
 
-    # --- Social Media Outputs ---
+    # --- Campaign Outputs ---
     linkedin_post: str
     youtube_script: str
     facebook_post: str
+    email_sequence: str
+    twitter_thread: str
+    landing_page: str
 
     # --- Podcast Outputs ---
     audio_path: Optional[str]   # Path to the MP3 file

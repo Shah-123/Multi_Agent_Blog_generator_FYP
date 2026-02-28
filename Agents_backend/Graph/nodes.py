@@ -49,6 +49,11 @@ from Graph.templates import (
 )
 from Graph.structured_data import FactCheckReport
 from Graph.keyword_optimizer import keyword_optimizer_node
+from event_bus import emit as _emit
+
+def _job(state) -> str:
+    """Extract job ID from state (works for both State dict and payload dict)."""
+    return state.get("_job_id", "")
 
 # ------------------------------------------------------------------
 # LLM MODEL TIERS (configurable via environment variables)
@@ -100,6 +105,7 @@ def _safe_slug(title: str) -> str:
 # 1. ROUTER NODE
 # ------------------------------------------------------------------
 def router_node(state: State) -> dict:
+    _emit(_job(state), "router", "started", "Analyzing topic and deciding research strategy...")
     logger.info("🚦 ROUTING ---")
     decider = llm.with_structured_output(RouterDecision)
     as_of = state.get("as_of", date.today().isoformat())
@@ -118,6 +124,7 @@ def router_node(state: State) -> dict:
         recency_days = 3650 # 10 years
 
     logger.info(f"Mode: {decision.mode} | Research Needed: {decision.needs_research}")
+    _emit(_job(state), "router", "completed", f"Mode: {decision.mode} | Research: {decision.needs_research}", {"mode": decision.mode, "needs_research": decision.needs_research})
     
     return {
         "needs_research": decision.needs_research,
@@ -160,6 +167,7 @@ def scrape_full_webpage(url: str, max_words: int = 1500) -> str:
 # 2. RESEARCH NODE
 # ------------------------------------------------------------------
 def research_node(state: State) -> dict:
+    _emit(_job(state), "research", "started", "Searching the web for evidence...")
     logger.info("🔍 DEEP RESEARCHING ---")
     queries = (state.get("queries") or [])[:3] # Keep it to 3 searches to save time
     
@@ -169,6 +177,7 @@ def research_node(state: State) -> dict:
     
     for q in queries:
         logger.info(f"Searching: {q}")
+        _emit(_job(state), "research", "working", f"Searching: {q}")
         results = _tavily_search(q, max_results=3)
         for r in results:
             if r['url'] not in found_urls:
@@ -177,9 +186,11 @@ def research_node(state: State) -> dict:
 
     if not raw_results:
         logger.warning("No results found.")
+        _emit(_job(state), "research", "completed", "No results found", {"sources": 0})
         return {"evidence": []}
 
     logger.info(f"🕸️ Scraping {len(raw_results[:5])} top articles...")
+    _emit(_job(state), "research", "working", f"Deep-scraping {len(raw_results[:5])} articles...")
     
     # 2. Scrape the full text of the top 5 URLs
     deep_evidence_context = ""
@@ -192,6 +203,7 @@ def research_node(state: State) -> dict:
             deep_evidence_context += f"CONTENT: {full_text[:3000]}\n\n" # Send up to 3000 chars per site
 
     logger.info("🧠 Analyzing full articles for hard evidence...")
+    _emit(_job(state), "research", "working", "Extracting verified facts from articles...")
     
     # 3. Give ALL the scraped text to the LLM to extract the best facts
     extractor = llm.with_structured_output(EvidencePack)
@@ -207,6 +219,7 @@ def research_node(state: State) -> dict:
     evidence = list({e.url: e for e in pack.evidence if e.url}.values()) # Deduplicate
     
     logger.info(f"✅ Extracted {len(evidence)} verified deep-evidence items.")
+    _emit(_job(state), "research", "completed", f"Found {len(evidence)} verified evidence items", {"sources": len(evidence)})
     return {"evidence": evidence}
 
 
@@ -214,6 +227,7 @@ def research_node(state: State) -> dict:
 # 3. ORCHESTRATOR NODE (PLANNER) - UPDATED WITH TONE & KEYWORDS
 # ------------------------------------------------------------------
 def orchestrator_node(state: State) -> dict:
+    _emit(_job(state), "orchestrator", "started", "Creating detailed blog outline...")
     logger.info("📋 PLANNING ---")
     planner = llm.with_structured_output(Plan)
     mode = state.get("mode", "closed_book")
@@ -255,6 +269,7 @@ Create a blog plan that:
     if plan.primary_keywords:
         logger.info(f"🎯 Keywords: {', '.join(plan.primary_keywords)}")
     
+    _emit(_job(state), "orchestrator", "completed", f"Planned {len(plan.tasks)} sections", {"sections": len(plan.tasks), "tone": plan.tone})
     return {"plan": plan}
 
 # ------------------------------------------------------------------
@@ -265,7 +280,9 @@ def fanout(state: State):
     if not state.get("plan"):
         logger.warning("No plan found, skipping fanout.")
         return []
-        
+    
+    _emit(_job(state), "writer", "started", f"Dispatching {len(state['plan'].tasks)} parallel writers...")
+    
     return [
         Send("worker", {
             "task": task.model_dump(),
@@ -273,6 +290,7 @@ def fanout(state: State):
             "mode": state["mode"],
             "plan": state["plan"].model_dump(),
             "evidence": [e.model_dump() for e in state.get("evidence", [])],
+            "_job_id": state.get("_job_id", ""),
         })
         for task in state["plan"].tasks
     ]
@@ -281,7 +299,9 @@ def worker_node(payload: dict) -> dict:
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
+    job_id = payload.get("_job_id", "")
     
+    _emit(job_id, "writer", "working", f"Writing section {task.id + 1}/{len(plan.tasks)}: {task.title}", {"section": task.id + 1, "total": len(plan.tasks)})
     logger.info(f"✍️ Writing Section {task.id + 1}/{len(plan.tasks)}: {task.title} (Tone: {plan.tone})")
 
     try:
@@ -343,34 +363,37 @@ def worker_node(payload: dict) -> dict:
             section_md += "."
         
         logger.info(f"✅ Completed: {word_count} words")
+        _emit(job_id, "writer", "working", f"Completed section {task.id + 1}: {task.title} ({word_count} words)", {"section": task.id + 1, "words": word_count})
         
     except Exception as e:
         import traceback
         logger.error(f"Error in section {task.title}: {e}")
         traceback.print_exc()
         section_md = f"## {task.title}\n\n[Error generating content: {str(e)}]"
+        _emit(job_id, "writer", "error", f"Failed section {task.id + 1}: {str(e)}")
 
     return {"sections": [(task.id, section_md)]}
 # . REDUCER: MERGE CONTENT (FIXED: Deduplicates sections)
 # ------------------------------------------------------------------
 def merge_content(state: State) -> dict:
+    _emit(_job(state), "merger", "started", "Merging all sections into final blog...")
     logger.info("🔗 MERGING SECTIONS ---")
     plan = state["plan"]
     
     # DEDUPLICATION LOGIC
-    # Workers might append duplicates if the graph is resumed.
-    # We use a dictionary to keep only the LATEST content for each Task ID.
     unique_sections = {}
     for task_id, content in state["sections"]:
         unique_sections[task_id] = content
         
-    # Sort by Task ID to ensure correct order
     ordered_content = [unique_sections[k] for k in sorted(unique_sections.keys())]
     
     body = "\n\n".join(ordered_content).strip()
     merged_md = f"# {plan.blog_title}\n\n{body}\n"
     
+    word_count = len(merged_md.split())
     logger.info(f"✅ Merged {len(ordered_content)} sections")
+    _emit(_job(state), "merger", "completed", f"Merged {len(ordered_content)} sections ({word_count} words)", {"sections": len(ordered_content), "words": word_count})
+    _emit(_job(state), "writer", "completed", f"All {len(ordered_content)} sections written", {"sections": len(ordered_content), "words": word_count})
     
     return {"merged_md": merged_md}
 
@@ -378,6 +401,7 @@ def merge_content(state: State) -> dict:
 # 7. REDUCER: DECIDE IMAGES
 # ------------------------------------------------------------------
 def decide_images(state: State) -> dict:
+    _emit(_job(state), "images", "started", "Planning image placement...")
     logger.info("🖼️ PLANNING IMAGES ---")
     planner = llm.with_structured_output(GlobalImagePlan)
     
@@ -389,6 +413,7 @@ def decide_images(state: State) -> dict:
         )),
     ])
 
+    _emit(_job(state), "images", "working", f"Planned {len(image_plan.images)} images", {"count": len(image_plan.images)})
     return {
         "image_specs": [img.model_dump() for img in image_plan.images],
     }
@@ -427,6 +452,7 @@ def _generate_image_bytes_google(prompt: str) -> Optional[bytes]:
 
 def generate_and_place_images(state: State) -> dict:
     """Generates images, replaces placeholders, and returns final text."""
+    _emit(_job(state), "images", "working", "Generating AI images...")
     logger.info("🎨 GENERATING IMAGES & SAVING ---")
     
     plan = state["plan"]
@@ -459,23 +485,33 @@ def generate_and_place_images(state: State) -> dict:
                 markdown_image = f"\n\n![{img['alt']}]({rel_path})\n*Figure: {img['caption']}*\n\n"
                 
                 # Find the target paragraph and inject the image AFTER IT
-                target_phrase = img.get("target_paragraph", "")
+                target_phrase = img.get("target_paragraph", "").strip()
                 if target_phrase:
-                    # Look for the target phrase, then match until the end of that paragraph (double newline)
-                    # We use a regex that finds the phrase, then any characters up to the next \n\n or end of string
-                    escaped_phrase = re.escape(target_phrase)
-                    # Pattern: escaped_phrase + anything (non-greedy) + (\n\n or end of string)
-                    pattern = re.compile(rf"({escaped_phrase}.*?(?:\n\n|\Z))", re.DOTALL)
+                    # Break the generated blog into paragraphs
+                    paragraphs = re.split(r'\n\s*\n', final_md)
+                    target_words = set(target_phrase.lower().split())
                     
-                    # Check if it matches
-                    if pattern.search(final_md):
-                        # Replace the first occurrence: append the image right after the matched paragraph
-                        final_md = pattern.sub(rf"\1{markdown_image}", final_md, count=1)
+                    best_match_idx = -1
+                    best_score = 0
+                    
+                    for i, p in enumerate(paragraphs):
+                        p_words = set(p.lower().split())
+                        # Calculate Jaccard-like overlap: how many target words are in this paragraph?
+                        overlap = len(target_words.intersection(p_words))
+                        if overlap > best_score:
+                            best_score = overlap
+                            best_match_idx = i
+                    
+                    # If we found a reasonable match (e.g. at least 3 matching words, or 30% of target)
+                    if best_match_idx >= 0 and best_score >= min(3, len(target_words) // 3):
+                        # Insert the image after the matched paragraph
+                        paragraphs.insert(best_match_idx + 1, markdown_image.strip())
+                        final_md = "\n\n".join(paragraphs)
                     else:
-                        logger.warning(f"Could not find target paragraph starting with '{target_phrase}', appending to end.")
-                        final_md += markdown_image
+                        logger.warning(f"Could not find target paragraph similar to '{target_phrase}', appending to end.")
+                        final_md += "\n" + markdown_image
                 else:
-                    final_md += markdown_image
+                    final_md += "\n" + markdown_image
 
                 logger.info(f"✅ Generated: {img_filename}")
             else:
@@ -484,12 +520,14 @@ def generate_and_place_images(state: State) -> dict:
     else:
         logger.info("⏭️ Skipped Image Generation (No API Key or no specs)")
 
+    _emit(_job(state), "images", "completed", "Images processed")
     return {"final": final_md}
 
 # ------------------------------------------------------------------
 # 9. FACT CHECKER NODE
 # ------------------------------------------------------------------
 def fact_checker_node(state: State) -> dict:
+    _emit(_job(state), "fact_checker", "started", "Auditing claims for accuracy...")
     logger.info("🕵️ FACT CHECKING ---")
     checker = llm_quality.with_structured_output(FactCheckReport)
     
@@ -521,10 +559,16 @@ def fact_checker_node(state: State) -> dict:
         report_text += "✅ No issues found!\n"
     
     logger.info(f"📊 Score: {report.score}/10 | Verdict: {report.verdict}")
+    _emit(_job(state), "fact_checker", "completed", f"Score: {report.score}/10 — {report.verdict}", {"score": report.score, "verdict": report.verdict, "issues": len(report.issues) if report.issues else 0})
     
     # Store structured data for revision loop
     issues_list = [
-        {"claim": issue.claim, "issue_type": issue.issue_type, "recommendation": issue.recommendation}
+        {
+            "claim": issue.claim,
+            "issue_type": issue.issue_type,
+            "severity": issue.severity,
+            "recommendation": issue.recommendation,
+        }
         for issue in report.issues
     ] if report.issues else []
     
@@ -541,6 +585,7 @@ def fact_checker_node(state: State) -> dict:
 def revision_node(state: State) -> dict:
     """Fixes flagged claims from the fact-checker using the REVISION_SYSTEM prompt."""
     attempts = state.get("fact_check_attempts", 0)
+    _emit(_job(state), "revision", "started", f"Self-healing revision (attempt {attempts + 1})...")
     logger.info(f"🔧 REVISING CONTENT (Attempt {attempts + 1})")
     
     issues = state.get("fact_check_issues", [])
@@ -581,16 +626,23 @@ def revision_node(state: State) -> dict:
         return {"fact_check_attempts": attempts + 1}
     
     logger.info(f"✅ Revised: {revised_words} words (was {original_words})")
+    _emit(_job(state), "revision", "completed", f"Revised: {revised_words} words", {"words": revised_words})
     return {
         "final": revised,
         "fact_check_attempts": attempts + 1,
     }
 
 # ------------------------------------------------------------------
-# 10. SOCIAL MEDIA NODE
+# 10. CAMPAIGN GENERATOR NODE
 # ------------------------------------------------------------------
-def social_media_node(state: State) -> dict:
-    logger.info("📱 GENERATING SOCIAL MEDIA PACK ---")
+def campaign_generator_node(state: State) -> dict:
+    _emit(_job(state), "campaign_generator", "started", "Generating 6-part omnichannel campaign...")
+    logger.info("🚀 GENERATING OMNICHANNEL CAMPAIGN PACK ---")
+    
+    from Graph.templates import (
+        LINKEDIN_SYSTEM, YOUTUBE_SYSTEM, FACEBOOK_SYSTEM,
+        EMAIL_SEQUENCE_SYSTEM, TWITTER_THREAD_SYSTEM, LANDING_PAGE_SYSTEM
+    )
     
     blog_post = state["final"]
     topic = state["topic"]
@@ -601,43 +653,56 @@ def social_media_node(state: State) -> dict:
     # Construct Context Once
     context = f"TOPIC: {topic}\nBLOG CONTENT:\n{blog_post[:4000]}\nSTATS:\n{key_stats}"
     
-    # Parallel generation — all 3 platforms at once (~3x faster)
+    # Parallel generation — all 6 platforms at once
     def _gen(system_prompt):
         return llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=context)]).content
     
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         linkedin_future = pool.submit(_gen, LINKEDIN_SYSTEM)
         youtube_future  = pool.submit(_gen, YOUTUBE_SYSTEM)
         facebook_future = pool.submit(_gen, FACEBOOK_SYSTEM)
+        email_future    = pool.submit(_gen, EMAIL_SEQUENCE_SYSTEM)
+        twitter_future  = pool.submit(_gen, TWITTER_THREAD_SYSTEM)
+        landing_future  = pool.submit(_gen, LANDING_PAGE_SYSTEM)
     
     linkedin = linkedin_future.result()
     youtube  = youtube_future.result()
     facebook = facebook_future.result()
+    email    = email_future.result()
+    twitter  = twitter_future.result()
+    landing  = landing_future.result()
     
-    logger.info("✅ LinkedIn Generated")
-    logger.info("✅ YouTube Generated")
-    logger.info("✅ Facebook Generated")
+    logger.info("✅ All 6 Campaign Assets Generated")
+    _emit(_job(state), "campaign_generator", "completed", "Generated Email, Twitter, Landing Page, LinkedIn, YouTube & Facebook content", {"assets": 6})
     
     return {
         "linkedin_post": linkedin,
         "youtube_script": youtube,
-        "facebook_post": facebook
+        "facebook_post": facebook,
+        "email_sequence": email,
+        "twitter_thread": twitter,
+        "landing_page": landing,
     }
 
 # ------------------------------------------------------------------
 # 11. EVALUATOR NODE
 # ------------------------------------------------------------------
 def evaluator_node(state: State) -> dict:
+    _emit(_job(state), "evaluator", "started", "Scoring final blog quality...")
     logger.info("📊 EVALUATING QUALITY ---")
     try:
         from validators import BlogEvaluator
         evaluator = BlogEvaluator()
         results = evaluator.evaluate(blog_post=state["final"], topic=state["topic"])
-        logger.info(f"🏆 Final Score: {results.get('final_score')}/10")
+        score = results.get('final_score', 0)
+        logger.info(f"🏆 Final Score: {score}/10")
+        _emit(_job(state), "evaluator", "completed", f"Quality Score: {score}/10", {"score": score})
         return {"quality_evaluation": results}
     except ImportError:
         logger.warning("Validators module not found, skipping evaluation.")
+        _emit(_job(state), "evaluator", "completed", "Evaluation skipped (module missing)")
         return {"quality_evaluation": {"error": "Module missing"}}
     except Exception as e:
         logger.warning(f"Evaluation Error: {e}")
+        _emit(_job(state), "evaluator", "error", f"Evaluation failed: {str(e)}")
         return {"quality_evaluation": {"error": str(e)}}

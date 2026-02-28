@@ -86,222 +86,100 @@ Return a structured validation result."""
 # 2. BLOG EVALUATOR (METRICS + AI CRITIC)
 # ============================================================================
 class BlogEvaluator:
-    """Quality evaluator that combines code-based metrics with AI critique."""
+    """Quality evaluator that uses LLM-as-a-Judge to comprehensively grade the content."""
     
-    def __init__(self, weights: Dict[str, float] = None):
+    def __init__(self):
+        # We use a solid model that can follow complex grading rubrics
         self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=api_key)
-        # FIXED: Configurable weights with sensible defaults
-        self.weights = weights or {
-            "structure": 0.30,
-            "readability": 0.35,
-            "citations": 0.25,
-            "seo": 0.10  # New: basic SEO check
-        }
-    
-    def evaluate_structure(self, blog_post: str) -> float:
-        """Check H1/H2/H3 structure (0-10 points)."""
-        # FIXED: More nuanced scoring
-        h1 = len(re.findall(r'^# ', blog_post, re.M))
-        h2 = len(re.findall(r'^## ', blog_post, re.M))
-        h3 = len(re.findall(r'^### ', blog_post, re.M))
-        
-        score = 0
-        
-        # Title check
-        if h1 == 1:
-            score += 3  # Exactly one H1
-        elif h1 > 1:
-            score += 1  # Multiple H1s is bad
-        else:
-            score += 0  # No H1 is very bad
-        
-        # Section structure
-        if 3 <= h2 <= 8:  # Ideal range for sections
-            score += 4
-        elif 1 <= h2 <= 10:  # Acceptable range
-            score += 2
-        else:
-            score += 0  # Too few or too many
-        
-        # Subsection depth (bonus)
-        if h3 >= 2:
-            score += 3  # Has subsections = good structure
-        elif h3 >= 1:
-            score += 1
-        
-        return min(score, 10)  # Cap at 10
-    
-    def evaluate_readability(self, blog_post: str) -> float:
-        """Check sentence length and flow (0-10 points)."""
-        # FIXED: Remove code blocks and extract plain text
-        clean_text = re.sub(r'```.*?```', '', blog_post, flags=re.DOTALL)
-        clean_text = re.sub(r'\[.*?\]\(.*?\)', '', clean_text)  # Remove links for counting
-        
-        if not clean_text.strip():
-            return 0
-        
-        # Count sentences (split by .?!)
-        sentences = [s.strip() for s in re.split(r'[.!?]+', clean_text) if len(s.strip()) > 10]
-        
-        if not sentences:
-            return 5  # Neutral score for no sentences
-        
-        # Calculate average sentence length
-        total_words = sum(len(s.split()) for s in sentences)
-        avg_sentence_len = total_words / len(sentences)
-        
-        # FIXED: Better scoring based on established readability guidelines
-        # Ideal: 15-25 words per sentence for blogs
-        if 15 <= avg_sentence_len <= 25:
-            return 10  # Perfect
-        elif 12 <= avg_sentence_len <= 30:
-            return 7   # Good
-        elif 8 <= avg_sentence_len <= 35:
-            return 5   # Fair
-        elif 5 <= avg_sentence_len <= 40:
-            return 3   # Poor
-        else:
-            return 1   # Very poor
-    
-    def evaluate_citations(self, blog_post: str) -> float:
-        """Check citation coverage (0-10 points)."""
-        # FIXED: Count proper markdown links with URLs
-        # Pattern: [text](http... or https...)
-        markdown_links = re.findall(r'\[([^\]]+)\]\((https?://[^\)]+)\)', blog_post)
-        
-        if not markdown_links:
-            return 0
-        
-        # FIXED: Extract unique domains to avoid counting same source multiple times
-        unique_domains = set()
-        for text, url in markdown_links:
-            # Extract domain from URL
-            domain_match = re.search(r'https?://(?:www\.)?([^/]+)', url)
-            if domain_match:
-                unique_domains.add(domain_match.group(1).lower())
-        
-        unique_domain_count = len(unique_domains)
-        
-        # FIXED: Better scoring based on diversity of sources
-        if unique_domain_count >= 5:
-            return 10  # Excellent source diversity
-        elif unique_domain_count >= 3:
-            return 7   # Good diversity
-        elif unique_domain_count >= 2:
-            return 4   # Some diversity
-        elif unique_domain_count == 1:
-            return 2   # Only one source
-        else:
-            return 0
-    
-    def evaluate_seo(self, blog_post: str, topic: str) -> float:
-        """Basic SEO checks (0-10 points)."""
-        score = 0
-        
-        # Check if topic appears in first 100 words
-        first_100_words = ' '.join(blog_post.split()[:100]).lower()
-        topic_lower = topic.lower()
-        
-        if topic_lower in first_100_words:
-            score += 3
-        
-        # Check for meta keywords (simple version)
-        common_words = first_100_words.split()
-        if len(set(common_words)) > 20:  # Decent vocabulary diversity
-            score += 3
-        
-        # Check length
-        word_count = len(blog_post.split())
-        if 1500 <= word_count <= 3000:  # Ideal blog length
-            score += 4
-        elif 1000 <= word_count <= 4000:  # Acceptable
-            score += 2
-        
-        return min(score, 10)
     
     def evaluate(self, blog_post: str, topic: str) -> Dict[str, Any]:
-        """Run complete evaluation."""
+        """Run complete AI evaluation."""
+        from typing import List
+        from pydantic import BaseModel, Field
         
-        # Calculate individual scores
-        struct_raw = self.evaluate_structure(blog_post)
-        read_raw = self.evaluate_readability(blog_post)
-        cite_raw = self.evaluate_citations(blog_post)
-        seo_raw = self.evaluate_seo(blog_post, topic)
+        # Define the exact grading rubric we want the AI to return
+        class BlogFeedback(BaseModel):
+            depth_score: float = Field(description="Score 0-10 on how comprehensively and accurately the topic is covered. Penalize fluff or hallucinations.")
+            structure_score: float = Field(description="Score 0-10 on logical flow, use of headers (H1, H2, H3), bullet points, and paragraph sizing.")
+            readability_score: float = Field(description="Score 0-10 on human-like tone, sentence variety, and avoidance of AI cliches (e.g. 'In conclusion').")
+            seo_and_links_score: float = Field(description="Score 0-10 on the presence of inline citations [Source](url) and keyword inclusion.")
+            strengths: List[str] = Field(description="3 specific strengths of this article.")
+            improvements: List[str] = Field(description="2 actionable improvements.")
+            overall_impression: str = Field(description="Brief overall impression.")
+
+        # Bind the schema to the LLM
+        evaluator = self.llm.with_structured_output(BlogFeedback)
         
-        # Apply weights
-        final_score = (
-            struct_raw * self.weights["structure"] +
-            read_raw * self.weights["readability"] +
-            cite_raw * self.weights["citations"] +
-            seo_raw * self.weights["seo"]
-        )
+        system_message = """You are an elite, ruthless blog editor and content quality rater.
+Your job is to read the provided blog post (in Markdown) and grade it strictly against four criteria.
+DO NOT GIVE PERFECT SCORES easily. Be highly critical.
+- Depth: Is it actually valuable, or just generic fluff?
+- Structure: Does it look like a well-formatted web article?
+- Readability: Does it sound like a human wrote it? Penalize robotic transitions.
+- SEO & Links: Does it cite its sources well using [Link](url)?
+Return the scores as exact floats (e.g., 7.5, 8.0, 9.2)."""
+
+        # Provide a truncated but large enough chunk for the AI to read
+        # GPT-4o-mini can handle 128k tokens, so we can send the whole thing easily,
+        # but truncating to 15000 chars is safe to save costs if the blog is huge.
+        human_message = f"TOPIC: {topic}\n\nBLOG CONTENT:\n{blog_post[:15000]}"
         
-        # Normalize to 0-10 scale
-        final_score = round(final_score, 1)
-        
-        # Determine verdict
-        if final_score >= 8.5:
-            verdict = "✅ EXCELLENT"
-        elif final_score >= 7.0:
-            verdict = "✅ GOOD"
-        elif final_score >= 5.5:
-            verdict = "⚠️ NEEDS IMPROVEMENT"
-        else:
-            verdict = "❌ POOR"
-        
-        # Get Qualitative Feedback from AI
         try:
-            # FIXED: Structured feedback
-            from typing import List
-            from pydantic import BaseModel, Field
-            
-            class BlogFeedback(BaseModel):
-                strengths: List[str] = Field(description="3 specific strengths")
-                improvements: List[str] = Field(description="2 actionable improvements")
-                overall_impression: str = Field(description="Brief overall impression")
-            
-            feedback_model = self.llm.with_structured_output(BlogFeedback)
-            
-            feedback_prompt = f"""Analyze this blog post about '{topic}'.
-            
-            BLOG CONTENT:
-            {blog_post[:3000]}... [truncated]
-            
-            Provide specific, actionable feedback."""
-            
-            feedback_result = feedback_model.invoke([
-                SystemMessage(content="You are an experienced blog editor."),
-                HumanMessage(content=feedback_prompt)
+            result: BlogFeedback = evaluator.invoke([
+                SystemMessage(content=system_message),
+                HumanMessage(content=human_message)
             ])
             
+            # Calculate final score equally weighting the 4 criteria
+            final_score = (result.depth_score + result.structure_score + result.readability_score + result.seo_and_links_score) / 4.0
+            final_score = round(final_score, 1)
+            
+            # Determine verdict
+            if final_score >= 8.5:
+                verdict = "✅ EXCELLENT"
+            elif final_score >= 7.0:
+                verdict = "✅ GOOD"
+            elif final_score >= 5.5:
+                verdict = "⚠️ NEEDS IMPROVEMENT"
+            else:
+                verdict = "❌ POOR"
+                
             ai_feedback = {
-                "strengths": feedback_result.strengths,
-                "improvements": feedback_result.improvements,
-                "overall": feedback_result.overall_impression
+                "strengths": result.strengths,
+                "improvements": result.improvements,
+                "overall": result.overall_impression
             }
+            
+            metrics = {
+                "depth_score": result.depth_score,
+                "structure_score": result.structure_score,
+                "readability_score": result.readability_score,
+                "seo_score": result.seo_and_links_score
+            }
+            
         except Exception as e:
             print(f"⚠️ AI Feedback failed: {e}")
+            final_score = 0.0
+            verdict = "❌ EVALUATION_FAILED"
+            metrics = {}
             ai_feedback = {
-                "error": "AI feedback unavailable",
+                "error": str(e),
                 "strengths": [],
                 "improvements": []
             }
+            
+        # Keep raw counts just for informational purposes
+        raw_counts = {
+            "word_count": len(blog_post.split()),
+            "link_count": len(re.findall(r'\[.*?\]\(https?://', blog_post)),
+            "unique_domains": len(set(re.findall(r'https?://(?:www\.)?([^/]+)', blog_post)))
+        }
         
         return {
             "final_score": final_score,
             "verdict": verdict,
-            "metrics": {
-                "structure_score": struct_raw,
-                "readability_score": read_raw,
-                "citation_score": cite_raw,
-                "seo_score": seo_raw,
-                "weights_used": self.weights
-            },
-            "raw_counts": {
-                "word_count": len(blog_post.split()),
-                "link_count": len(re.findall(r'\[.*?\]\(https?://', blog_post)),
-                "unique_domains": len(set(re.findall(r'https?://(?:www\.)?([^/]+)', blog_post)))
-            },
+            "metrics": metrics,
+            "raw_counts": raw_counts,
             "ai_feedback": ai_feedback
         }
 
