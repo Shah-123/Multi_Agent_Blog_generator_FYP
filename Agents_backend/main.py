@@ -326,22 +326,30 @@ def build_graph(memory=None):
     )
     workflow.add_edge("research", "orchestrator")
     workflow.add_conditional_edges("orchestrator", fanout, ["worker"])
-    workflow.add_edge("worker", "reducer")
-    workflow.add_edge("reducer", "completion_validator")
-    workflow.add_edge("completion_validator", "fact_checker")
+    
+    # NEW EDGE: worker directly to fact_checker
+    workflow.add_edge("worker", "fact_checker")
     
     # SELF-HEALING LOOP: fact_checker → revision (if issues) → fact_checker
     def fact_check_router(state):
         verdict = state.get("fact_check_verdict", "READY")
         attempts = state.get("fact_check_attempts", 0)
+        # Fix: only try to revise twice
         if verdict == "NEEDS_REVISION" and attempts < 2:
             return "revision"
-        return "keyword_optimizer"
+        # Move to reducer instead of keyword optimizer
+        return "reducer"
     
     workflow.add_conditional_edges("fact_checker", fact_check_router,
-        ["revision", "keyword_optimizer"]
+        ["revision", "reducer"]
     )
     workflow.add_edge("revision", "fact_checker")  # Loop back for re-check
+    
+    # After Fact Check is done -> Reducer (merge & images)
+    workflow.add_edge("reducer", "completion_validator")
+    
+    # After reduction -> keyword_optimizer
+    workflow.add_edge("completion_validator", "keyword_optimizer")
     
     workflow.add_edge("keyword_optimizer", "campaign_generator")
     workflow.add_edge("campaign_generator", "audio_generator")

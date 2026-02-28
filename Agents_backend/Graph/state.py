@@ -20,6 +20,7 @@ class EvidenceItem(BaseModel):
     snippet: str = Field(description="Relevant content excerpt")
     published_at: Optional[str] = Field(description="Date string or None")
     source: str = Field(description="Domain name (e.g. techcrunch.com)")
+    authors: Optional[str] = Field(description="Author Names or Organization", default=None)
 
 class EvidencePack(BaseModel):
     """Container for search results."""
