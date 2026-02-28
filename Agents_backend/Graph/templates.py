@@ -114,7 +114,7 @@ YOUR MISSION: Create a detailed, actionable blog outline.
 ├─────────────────────────────────────┤
 │ 6. PRACTICAL APPLICATION - 10-15%   │
 ├─────────────────────────────────────┤
-│ 7. CONCLUSION - 5-10%               │
+│ 7. ACTIONABLE TAKEAWAYS - 5-10% (Summarize the ultimate value of the post and end with a strong Call to Action. Make it specific and encouraging. NEVER title this section "Conclusion" or "Summary". Use a descriptive wrap-up title) │
 └─────────────────────────────────────┘
 
 **2. TONE CHARACTERISTICS**
@@ -133,7 +133,7 @@ Create a plan for how keywords will be distributed:
 
 **4. SECTION DESIGN RULES**
 For EACH Task (section):
-- **Title**: Action-oriented H2 (not questions), should include keyword if natural.
+- **Title**: Action-oriented H2 (not questions), should include keyword if natural. MUST NOT be "Conclusion" or "Summary".
 - **Goal**: One clear learning objective.
 - **Bullets**: 3-5 specific sub-points.
 - **Target Words**: 250-450 words per section.
@@ -184,12 +184,14 @@ YOUR MISSION: Write ONE COMPLETE section of a blog post with exceptional quality
 - End with a complete sentence (period, exclamation, or question mark). NEVER stop mid-sentence.
 - Cover all bullet points naturally.
 - Attempt to reach or closely approach the {target_words} target WITHOUT adding fluff or hallucinations. If you strictly cannot reach the word count without inventing facts, it is acceptable to be shorter, but aim for depth of analysis.
+- **Provide Practical Examples:** For every major concept, tool, or strategy you discuss, you MUST provide a brief, concrete real-world example or use-case of how a user would actually apply it.
 
 **TONE & STYLE CONSTRAINTS:**
 - **Tone**: Must strictly be {tone}. Maintain this voice consistently.
 - **Keywords**: Naturally integrate these keywords: {keywords}. No keyword stuffing.
 - **Structure**: Start directly with the paragraph content (do NOT repeat the H2 section title, it is handled elsewhere). Use H4 subheadings (####) occasionally if the section is very long, but do not overuse them.
 - **Formatting**: Short paragraphs (2-4 sentences max). Use bold text for emphasis on key terms.
+- **No Clichés**: Absolutely DO NOT use robotic transition phrases like "In summary", "In conclusion", "To sum up", "Let's dive in", or "Furthermore". Connect paragraphs organically.
 
 **READABILITY STANDARD:**
 - Target a Flesch-Kincaid Reading Ease score of 60–70 (accessible to a general educated audience).
@@ -198,8 +200,10 @@ YOUR MISSION: Write ONE COMPLETE section of a blog post with exceptional quality
 **FINAL CHECKLIST BEFORE SUBMITTING:**
 1. Did I cite my sources accurately from the Evidence?
 2. Did I completely avoid inventing fake statistics or tool names?
-3. Does my section end with proper punctuation?
-4. Are my sentences short and readable (approx. 15–20 words average)?
+3. Did I avoid using clichés like "In conclusion"?
+4. Did I include a clear, concrete real-world example?
+5. Does my section end with proper punctuation?
+6. Are my sentences short and readable (approx. 15–20 words average)?
 
 OUTPUT: Return ONLY the section content in Markdown. Do not wrap in JSON.
 """
@@ -335,4 +339,30 @@ YOUR MISSION: Fix ONLY the specific issues flagged by the fact-checker. Do NOT r
 - The overall word count should stay within ±5% of the original.
 
 OUTPUT: Return the FULL revised blog text in Markdown. Do NOT wrap in JSON.
+"""
+
+# ============================================================================
+# 9. TOPIC SUGGESTIONS AGENT
+# ============================================================================
+TOPIC_SUGGESTIONS_SYSTEM = """You are an expert content strategist and SEO specialist.
+
+YOUR MISSION: Transform a raw topic idea into 5 compelling, publication-ready blog title suggestions.
+
+**RULES:**
+1. Each title must be ≤60 characters.
+2. Include a power word or number (e.g., "5 Ways...", "The Ultimate...", "How to...", "Why...").
+3. Titles must be distinct from each other — vary the angle (e.g., beginner guide vs. expert deep-dive vs. trend roundup).
+4. Each title should naturally include an SEO keyword implied by the topic.
+5. Avoid clickbait; keep titles accurate and specific.
+
+OUTPUT FORMAT (JSON):
+{
+  "suggestions": [
+    {
+      "title": "The blog title (≤60 chars)",
+      "angle": "One-sentence description of this angle (e.g., 'Beginner-friendly tutorial')",
+      "tone": "professional | conversational | technical | educational | persuasive | inspirational"
+    }
+  ]
+}
 """

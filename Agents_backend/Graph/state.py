@@ -73,6 +73,9 @@ class State(TypedDict, total=False):
     'total=False' allows keys to be missing during initialization.
     """
     
+    # --- Internal ---
+    _job_id: str        # For real-time event emission
+
     # --- Inputs ---
     topic: str
     as_of: str          # Date string
