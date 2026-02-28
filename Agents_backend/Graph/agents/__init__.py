@@ -4,7 +4,7 @@ from .research import research_node
 from .orchestrator import orchestrator_node
 from .workers import fanout, worker_node, merge_content
 from .multimedia import decide_images, generate_and_place_images
-from .quality_control import fact_checker_node, revision_node, evaluator_node
+from .quality_control import qa_agent_node
 from .campaign import campaign_generator_node
 
 __all__ = [
@@ -16,8 +16,6 @@ __all__ = [
     "merge_content",
     "decide_images",
     "generate_and_place_images",
-    "fact_checker_node",
-    "revision_node",
-    "evaluator_node",
+    "qa_agent_node",
     "campaign_generator_node",
 ]

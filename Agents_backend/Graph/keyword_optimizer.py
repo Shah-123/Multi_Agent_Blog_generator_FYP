@@ -5,10 +5,6 @@ Analyzes and optimizes keyword usage in blog content.
 
 import re
 from typing import Dict, List
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
-
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 def analyze_keyword_density(text: str, keywords: List[str]) -> Dict:
     """
@@ -147,7 +143,7 @@ def keyword_optimizer_node(state: dict) -> dict:
         report += f"   Occurrences: {stats['count']}\n"
         report += f"   Density: {stats['density']}% (optimal: 1-2%)\n"
         report += f"   In Title/Intro: {'✓' if stats['in_title'] else '✗'}\n"
-        report += f"   In First Paragraph: {'✓' if stats['in_first_para'] else '✗'}\n"
+        report += f"   In First Paragraph: {'✓' if stats['in_first_paragraph'] else '✗'}\n"
         report += f"   In Headings: {'✓' if stats['in_headings'] else '✗'}\n"
         report += f"   Status: {stats['status'].upper()}\n\n"
     

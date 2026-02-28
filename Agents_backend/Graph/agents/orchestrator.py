@@ -31,10 +31,22 @@ Create a blog plan that:
 4. Creates engaging, SEO-optimized content
 """
     
+    target_sections = state.get("target_sections", 5)
+    
+    # Calculate the exact section numbers for the prompt structure
+    target_sections_math = target_sections + 2 # Add 2 for Intro and Context
+    target_sections_plus_one = target_sections_math + 1
+    target_sections_plus_two = target_sections_plus_one + 1
+    total_sections = target_sections_plus_two
+    
     plan = planner.invoke([
         SystemMessage(content=ORCH_SYSTEM.format(
             tone=target_tone, 
-            keywords=keywords_str
+            keywords=keywords_str,
+            target_sections=target_sections_math,
+            target_sections_plus_one=target_sections_plus_one,
+            target_sections_plus_two=target_sections_plus_two,
+            total_sections=total_sections
         )),
         HumanMessage(content=prompt_content),
     ])

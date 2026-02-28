@@ -8,10 +8,8 @@ from .agents import (
     merge_content, 
     decide_images, 
     generate_and_place_images,
-    fact_checker_node,
-    revision_node,
-    campaign_generator_node, 
-    evaluator_node
+    qa_agent_node,
+    campaign_generator_node
 )
 from .agents.utils import _safe_slug
 
@@ -24,9 +22,7 @@ __all__ = [
     "merge_content",
     "decide_images",
     "generate_and_place_images",
-    "fact_checker_node",
-    "revision_node",
-    "evaluator_node",
+    "qa_agent_node",
     "campaign_generator_node",
     "_safe_slug"
 ]

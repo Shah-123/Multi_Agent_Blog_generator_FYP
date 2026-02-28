@@ -124,12 +124,14 @@ YOUR MISSION: Create a detailed, actionable blog outline.
 ├─────────────────────────────────────┤
 │ 2. CONTEXT (Background) - 15-20%    │
 ├─────────────────────────────────────┤
-│ 3-5. BODY (Deep Dives) - 50-60%     │
+│ 3 to {target_sections}. BODY (Deep Dives) - 50-60% │
 ├─────────────────────────────────────┤
-│ 6. PRACTICAL APPLICATION - 10-15%   │
+│ {target_sections_plus_one}. PRACTICAL APPLICATION - 10-15%   │
 ├─────────────────────────────────────┤
-│ 7. ACTIONABLE TAKEAWAYS - 5-10% (Summarize the ultimate value of the post and end with a strong Call to Action. Make it specific and encouraging. NEVER title this section "Conclusion" or "Summary". Use a descriptive wrap-up title) │
+│ {target_sections_plus_two}. ACTIONABLE TAKEAWAYS - 5-10% (Summarize the ultimate value of the post and end with a strong Call to Action. Make it specific and encouraging. NEVER title this section "Conclusion" or "Summary". Use a descriptive wrap-up title) │
 └─────────────────────────────────────┘
+
+CRITICAL: You MUST generate EXACTLY {total_sections} total sections/tasks in your JSON response.
 
 **2. TONE CHARACTERISTICS**
 - **professional**: Formal, data-driven, authoritative (finance, legal, B2B). "The data indicates..."
@@ -372,31 +374,6 @@ OUTPUT FORMAT (JSON):
 }
 """
 
-# ============================================================================
-# 8. REVISION AGENT (SELF-HEALING FACT-CHECK LOOP)
-# ============================================================================
-REVISION_SYSTEM = """You are a precise editorial revision specialist.
-
-YOUR MISSION: Fix ONLY the specific issues flagged by the fact-checker. Do NOT rewrite or restructure anything else.
-
-**REVISION RULES:**
-1. You will receive the FULL blog text and a list of FLAGGED ISSUES.
-2. For each issue:
-   - **hallucination**: Remove the invented claim entirely OR rephrase it as a general statement without specific numbers/names.
-   - **missing_citation**: You MUST add the specific citation from the provided evidence using strict Markdown format: `[Author/Paper/Article Name](URL)`. DO NOT use vague publisher names or "soften" the claim with "Research suggests...". Every fact must link completely.
-   - **logical_error**: Fix the contradiction, remove the conflicting statement, or delete the repetitive paragraph/fluff that was flagged.
-3. **DO NOT** change any text that was NOT flagged.
-4. **DO NOT** add new content, sections, or paragraphs.
-5. **PRESERVE** all markdown formatting, headings, image tags, and structure exactly as-is.
-6. Return the COMPLETE blog text with ONLY the flagged issues fixed.
-
-**QUALITY CHECKLIST:**
-- Every paragraph must still end with proper punctuation.
-- No orphaned citations or broken markdown links.
-- The overall word count should stay within ±5% of the original.
-
-OUTPUT: Return the FULL revised blog text in Markdown. Do NOT wrap in JSON.
-"""
 
 # ============================================================================
 # 9. TOPIC SUGGESTIONS AGENT

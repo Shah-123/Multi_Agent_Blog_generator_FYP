@@ -25,8 +25,8 @@ def _safe_slug(title: str) -> str:
     s = re.sub(r"\s+", "_", s).strip("_")
     return s or "blog"
 
-_FAST_MODEL = os.getenv("LLM_FAST_MODEL", "gpt-4o")
-_QUALITY_MODEL = os.getenv("LLM_QUALITY_MODEL", "gpt-4o")
+_FAST_MODEL = os.getenv("LLM_FAST_MODEL", "gpt-4o-mini")
+_QUALITY_MODEL = os.getenv("LLM_QUALITY_MODEL", "gpt-4o-mini")
 
 llm_fast = ChatOpenAI(model=_FAST_MODEL, temperature=0)
 llm_quality = ChatOpenAI(model=_QUALITY_MODEL, temperature=0.1)

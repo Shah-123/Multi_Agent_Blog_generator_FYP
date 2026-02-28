@@ -84,6 +84,7 @@ class State(TypedDict, total=False):
     # NEW: Tone and keyword inputs
     target_tone: Optional[str]        # e.g., "professional", "conversational"
     target_keywords: List[str]        # e.g., ["AI healthcare", "medical automation"]
+    target_sections: int              # How many body sections to generate
 
     # --- Router Outputs ---
     needs_research: bool
@@ -112,14 +113,13 @@ class State(TypedDict, total=False):
 
     # --- Final Outputs ---
     final: str                # The finished Markdown blog post
-    fact_check_report: str    # The audit report text
     
-    # --- Self-Healing Fact-Check Loop ---
-    fact_check_verdict: str          # "READY" or "NEEDS_REVISION"
-    fact_check_issues: List[dict]    # Structured list of flagged issues
-    fact_check_score: int            # 0-10 score from fact-checker
-    fact_check_attempts: int         # Retry counter (capped at 2)
-
+    # --- Quality Assurance (QA) ---
+    qa_report: str            # The text report from the QA Agent
+    qa_verdict: str           # "READY" or "NEEDS_REVISION"
+    qa_issues: List[dict]     # Structured list of flagged issues
+    qa_score: float             # 0-10 overall score
+    
     # --- Campaign Outputs ---
     linkedin_post: str
     youtube_script: str
@@ -131,13 +131,12 @@ class State(TypedDict, total=False):
     # --- Podcast Outputs ---
     audio_path: Optional[str]   # Path to the MP3 file
     script_path: Optional[str]  # Path to the text script
-
-    # --- Evaluation ---
-    completion_report: str          # Text report from validator
-    completion_score: int           # 0-10 completeness score
-    completion_issues: List[dict]   # Structured list of issues
-    quality_evaluation: dict
     
-    # NEW: Keyword optimization outputs
+    # --- Keyword Optimization ---
     keyword_analysis: dict      # Detailed keyword metrics
     keyword_report: str         # Human-readable report
+    
+    # --- Cost Saving Flags ---
+    generate_images: bool       # Whether to run DALL-E
+    generate_campaign: bool     # Whether to run multi-agent social campaign
+    generate_audio: bool        # Whether to run TTS podcast

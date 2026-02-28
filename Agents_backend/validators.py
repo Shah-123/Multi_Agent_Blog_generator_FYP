@@ -110,7 +110,7 @@ class BlogEvaluator:
         # Bind the schema to the LLM
         evaluator = self.llm.with_structured_output(BlogFeedback)
         
-        system_message = """You are an elite, ruthless blog editor and content quality rater.
+        system_message = """You are an elite blog editor and content quality rater.
 Your job is to read the provided blog post (in Markdown) and grade it strictly against four criteria.
 DO NOT GIVE PERFECT SCORES easily. Be highly critical.
 - Depth: Is it actually valuable, or just generic fluff?

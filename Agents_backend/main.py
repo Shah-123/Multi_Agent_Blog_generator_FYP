@@ -29,14 +29,11 @@ from Graph.nodes import (
     merge_content, 
     decide_images, 
     generate_and_place_images,
-    fact_checker_node,
-    revision_node,
+    qa_agent_node,
     campaign_generator_node, 
-    evaluator_node,
     _safe_slug
 )
 from Graph.keyword_optimizer import keyword_optimizer_node
-from Graph.completion_validator import validate_completion
 from validators import TopicValidator
 
 # ===========================================================================
@@ -93,7 +90,7 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
     topic = state.get("topic", "Unknown Topic")
     tone = state.get("target_tone", "N/A")
     keywords = state.get("target_keywords", [])
-    score = state.get("quality_evaluation", {}).get("final_score", "N/A")
+    score = state.get("qa_score", "N/A")
     word_count = len(state.get("final", "").split())
     
     # Get blog filename
@@ -125,9 +122,8 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 │   ├── youtube_*.txt
 │   └── facebook_*.txt
 ├── reports/
-│   ├── fact_check.txt
-│   ├── keyword_optimization.txt
-│   └── quality_evaluation.json
+│   ├── qa_report.txt
+│   └── keyword_optimization.txt
 ├── research/
 │   └── evidence.json
 ├── assets/
@@ -140,7 +136,7 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 
 ## 📊 Quality Metrics
 
-{state.get('fact_check_report', 'No fact check report available')}
+{state.get('qa_report', 'No QA report available')}
 
 ---
 
@@ -209,28 +205,16 @@ def save_blog_content(folders: dict, state: State) -> dict:
             saved[platform] = path
 
     # 3. Reports
-    if state.get("fact_check_report"):
-        path = f"{folders['reports']}/fact_check.txt"
-        Path(path).write_text(state["fact_check_report"], encoding="utf-8")
-        saved["fact_check"] = path
+    if state.get("qa_report"):
+        path = f"{folders['reports']}/qa_report.txt"
+        Path(path).write_text(state["qa_report"], encoding="utf-8")
+        saved["qa_report"] = path
     
     # Save keyword report
     if state.get("keyword_report"):
         path = f"{folders['reports']}/keyword_optimization.txt"
         Path(path).write_text(state["keyword_report"], encoding="utf-8")
         saved["keyword_report"] = path
-    
-    # Save completion report
-    if state.get("completion_report"):
-        path = f"{folders['reports']}/completion_validation.txt"
-        Path(path).write_text(state["completion_report"], encoding="utf-8")
-        saved["completion_report"] = path
-        
-    if state.get("quality_evaluation"):
-        path = f"{folders['reports']}/quality_evaluation.json"
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(state["quality_evaluation"], f, indent=2)
-        saved["quality_eval"] = path
 
     # 4. Audio
     if state.get("audio_path") and os.path.exists(state["audio_path"]):
@@ -262,10 +246,8 @@ def save_blog_content(folders: dict, state: State) -> dict:
         "file_paths": {
             "blog": saved.get("blog"),
             "assets": [saved.get(k) for k in ["linkedin", "youtube", "facebook", "twitter", "email", "landing_page"] if saved.get(k)],
-            "fact_check": saved.get("fact_check"),
+            "qa_report": saved.get("qa_report"),
             "keyword_report": saved.get("keyword_report"),
-            "completion_report": saved.get("completion_report"),
-            "quality_eval": saved.get("quality_eval"),
             "evidence": saved.get("evidence"),
             "plan": f"{folders['metadata']}/plan.json"
         }
@@ -295,7 +277,12 @@ def build_graph(memory=None):
     reducer.add_node("decide_images", decide_images)
     reducer.add_node("generate_and_place_images", generate_and_place_images)
     reducer.add_edge(START, "merge_content")
-    reducer.add_edge("merge_content", "decide_images")
+    
+    # Conditional edge to skip image generation if disabled
+    reducer.add_conditional_edges("merge_content",
+        lambda s: "decide_images" if s.get("generate_images", True) else END
+    )
+    
     reducer.add_edge("decide_images", "generate_and_place_images")
     reducer.add_edge("generate_and_place_images", END)
 
@@ -305,10 +292,8 @@ def build_graph(memory=None):
     workflow.add_node("research", research_node)
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("worker", worker_node)
-    workflow.add_node("reducer", reducer.compile()) 
-    workflow.add_node("completion_validator", validate_completion)
-    workflow.add_node("fact_checker", fact_checker_node)
-    workflow.add_node("revision", revision_node)
+    workflow.add_node("reducer", reducer.compile())
+    workflow.add_node("qa_agent", qa_agent_node)
     workflow.add_node("keyword_optimizer", keyword_optimizer_node)
     workflow.add_node("campaign_generator", campaign_generator_node)
     
@@ -316,48 +301,50 @@ def build_graph(memory=None):
         workflow.add_node("audio_generator", podcast_node)
     else:
         workflow.add_node("audio_generator", lambda s: {})
-    
-    workflow.add_node("evaluator", evaluator_node)
 
     # Edges
     workflow.add_edge(START, "router")
-    workflow.add_conditional_edges("router", 
+    workflow.add_conditional_edges("router",
         lambda s: "research" if s["needs_research"] else "orchestrator"
     )
     workflow.add_edge("research", "orchestrator")
     workflow.add_conditional_edges("orchestrator", fanout, ["worker"])
+
+    # FIX 1: workers → reducer first (merge all sections + place images)
+    # Previously this was: workflow.add_edge("worker", "fact_checker")  ← BUG
+    workflow.add_edge("worker", "reducer")
+
+    # FIX 2: reducer → qa_agent
+    workflow.add_edge("reducer", "qa_agent")
+
+    # FIX 3: qa_agent → keyword_optimizer (No self-healing loop)
+    workflow.add_edge("qa_agent", "keyword_optimizer")
     
-    # NEW EDGE: worker directly to fact_checker
-    workflow.add_edge("worker", "fact_checker")
-    
-    # SELF-HEALING LOOP: fact_checker → revision (if issues) → fact_checker
-    def fact_check_router(state):
-        verdict = state.get("fact_check_verdict", "READY")
-        attempts = state.get("fact_check_attempts", 0)
-        # Fix: only try to revise twice
-        if verdict == "NEEDS_REVISION" and attempts < 2:
-            return "revision"
-        # Move to reducer instead of keyword optimizer
-        return "reducer"
-    
-    workflow.add_conditional_edges("fact_checker", fact_check_router,
-        ["revision", "reducer"]
+    # Cost-saving conditional routing
+    def after_keyword_router(s):
+        if s.get("generate_campaign", True):
+            return "campaign_generator"
+        elif s.get("generate_audio", True) and PODCAST_AVAILABLE:
+            return "audio_generator"
+        return END
+        
+    workflow.add_conditional_edges("keyword_optimizer", after_keyword_router, 
+        ["campaign_generator", "audio_generator", END]
     )
-    workflow.add_edge("revision", "fact_checker")  # Loop back for re-check
     
-    # After Fact Check is done -> Reducer (merge & images)
-    workflow.add_edge("reducer", "completion_validator")
+    def after_campaign_router(s):
+        if s.get("generate_audio", True) and PODCAST_AVAILABLE:
+            return "audio_generator"
+        return END
+        
+    workflow.add_conditional_edges("campaign_generator", after_campaign_router,
+        ["audio_generator", END]
+    )
     
-    # After reduction -> keyword_optimizer
-    workflow.add_edge("completion_validator", "keyword_optimizer")
-    
-    workflow.add_edge("keyword_optimizer", "campaign_generator")
-    workflow.add_edge("campaign_generator", "audio_generator")
-    workflow.add_edge("audio_generator", "evaluator")
-    workflow.add_edge("evaluator", END)
+    workflow.add_edge("audio_generator", END)
 
     return workflow.compile(
-        checkpointer=memory, 
+        checkpointer=memory,
         interrupt_after=["orchestrator"]
     )
 
@@ -405,10 +392,30 @@ def run_app():
     keywords_input = input("\n🎯 Enter target keywords (comma-separated, or press Enter to skip): ").strip()
     target_keywords = [k.strip() for k in keywords_input.split(",")] if keywords_input else []
     
+    print("\n💰 Cost-Saving Options (Press Enter for Yes):")
+    gen_img_input = input("Generate Images (Gemini)? [Y/n]: ").strip().lower()
+    generate_images = gen_img_input != "n"
+    
+    gen_camp_input = input("Generate Social Media Campaign? [Y/n]: ").strip().lower()
+    generate_campaign = gen_camp_input != "n"
+    
+    gen_aud_input = input("Generate Podcast Audio (TTS)? [Y/n]: ").strip().lower()
+    generate_audio = gen_aud_input != "n"
+    
+    # 4. Get Number of Sections
+    sections_input = input("\n📏 How many body sections should the blog have? (1-10) [default: 5]: ").strip()
+    try:
+        target_sections = int(sections_input) if sections_input else 5
+        target_sections = max(1, min(10, target_sections)) # Clamp between 1 and 10
+    except ValueError:
+        target_sections = 5
+        
     print(f"\n✅ Tone: {target_tone}")
+    print(f"✅ Sections: {target_sections}")
+    print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Audio={'ON' if generate_audio else 'OFF'}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
     
-    # 4. Setup Folders
+    # 5. Setup Folders
     folders = create_blog_structure(topic)
     print(f"📁 Working Directory: {folders['base']}")
     
@@ -422,7 +429,11 @@ def run_app():
         "sections": [],
         "blog_folder": folders["base"],
         "target_tone": target_tone,
-        "target_keywords": target_keywords
+        "target_keywords": target_keywords,
+        "target_sections": target_sections,
+        "generate_images": generate_images,
+        "generate_campaign": generate_campaign,
+        "generate_audio": generate_audio
     }
     
     # 6. Phase 1: Research & Planning
@@ -471,11 +482,6 @@ def run_app():
     print("✨ GENERATION COMPLETE ✨")
     print(f"📂 Output Folder: {folders['base']}")
     print(f"📖 Read Summary: {readme}")
-    
-    # Display completion report if available
-    if final_state.get("completion_report"):
-        print("\n" + "="*60)
-        print(final_state["completion_report"])
     
     # Display keyword report if available
     if final_state.get("keyword_report"):
