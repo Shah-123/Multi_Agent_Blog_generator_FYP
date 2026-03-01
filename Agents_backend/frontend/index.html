@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Content Factory — Real-Time Agent Pipeline</title>
+    <meta name="description" content="Generate publication-ready blogs with multi-agent AI pipeline visualization">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <!-- Marked.js for rendering markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/frontend/styles.css">
+</head>
+
+<body>
+
+    <!-- ========================= HEADER ========================= -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                        <polyline points="2 17 12 22 22 17"></polyline>
+                        <polyline points="2 12 12 17 22 12"></polyline>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="logo-text">AI Content Factory</h1>
+                    <span class="logo-sub">Multi-Agent Pipeline v2.0</span>
+                </div>
+            </div>
+            <div class="header-status">
+                <div class="status-dot" id="server-status"></div>
+                <span id="server-status-text">Connecting...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ========================= MAIN ========================= -->
+    <main class="main-container">
+
+        <!-- ======= INPUT SECTION ======= -->
+        <section class="glass-card input-section" id="input-section">
+            <div class="section-header">
+                <div class="section-icon">🚀</div>
+                <h2>Generate Content</h2>
+            </div>
+            <form id="generate-form">
+                <div class="input-group">
+                    <label for="topic-input">Topic</label>
+                    <div class="input-wrapper">
+                        <input type="text" id="topic-input" placeholder="e.g., The Future of Quantum Computing in 2026"
+                            required autocomplete="off">
+                        <div class="input-glow"></div>
+                    </div>
+                    <!-- Topic Suggestions Container -->
+                    <div id="topic-suggestions" class="topic-suggestions"></div>
+                    <button type="button" class="btn-suggest" id="btn-suggest">
+                        ✨ Get Title Suggestions
+                    </button>
+                    <!-- Suggestions Panel -->
+                    <div class="suggestions-panel" id="suggestions-panel" style="display:none;">
+                        <div class="suggestions-header">
+                            <span>💡 AI-Generated Title Suggestions</span>
+                            <button type="button" class="suggestions-close" id="suggestions-close">✕</button>
+                        </div>
+                        <div class="suggestions-loading" id="suggestions-loading" style="display:none;">
+                            <div class="suggest-spinner"></div>
+                            <span>Generating suggestions...</span>
+                        </div>
+                        <div class="suggestions-list" id="suggestions-list"></div>
+                    </div>
+                </div>
+                <div class="input-row">
+                    <div class="input-group half">
+                        <label for="tone-select">Tone</label>
+                        <select id="tone-select">
+                            <option value="">Auto-detect</option>
+                            <option value="professional">Professional</option>
+                            <option value="conversational">Conversational</option>
+                            <option value="educational">Educational</option>
+                            <option value="persuasive">Persuasive</option>
+                            <option value="inspirational">Inspirational</option>
+                        </select>
+                    </div>
+                    <div class="input-group half">
+                        <label for="audience-input">Target Audience</label>
+                        <input type="text" id="audience-input" placeholder="e.g., Developers, Students">
+                    </div>
+                </div>
+                <div class="input-row">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="include-images" checked>
+                        <span class="checkmark"></span>
+                        AI Images
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="auto-approve" checked>
+                        <span class="checkmark"></span>
+                        Auto-Approve Plan
+                    </label>
+                </div>
+                <button type="submit" class="btn-generate" id="btn-generate">
+                    <span class="btn-text">Generate Blog</span>
+                    <span class="btn-icon">→</span>
+                    <div class="btn-shine"></div>
+                </button>
+            </form>
+        </section>
+
+        <!-- ======= PIPELINE VISUALIZATION ======= -->
+        <section class="glass-card pipeline-section" id="pipeline-section" style="display:none;">
+            <div class="section-header">
+                <div class="section-icon">🧠</div>
+                <h2>Agent Pipeline <span class="pipeline-status" id="pipeline-status-badge">Running</span></h2>
+                <div class="time-elapsed" id="time-elapsed">00:00</div>
+            </div>
+
+            <!-- Pipeline Graph -->
+            <div class="pipeline-graph" id="pipeline-graph">
+                <!-- Row 1: Input → Router → Research -->
+                <div class="pipeline-row">
+                    <div class="agent-node" data-agent="pipeline" id="node-pipeline">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">📝</div>
+                        <div class="node-name">Input</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="router" id="node-router">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">🚦</div>
+                        <div class="node-name">Router</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="research" id="node-research">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">🔍</div>
+                        <div class="node-name">Research</div>
+                        <div class="node-status"></div>
+                    </div>
+                </div>
+
+                <!-- Row 2: Orchestrator → Writer (Parallel) → Merger -->
+                <div class="pipeline-row">
+                    <div class="agent-node" data-agent="orchestrator" id="node-orchestrator">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">📋</div>
+                        <div class="node-name">Planner</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node agent-node-large" data-agent="writer" id="node-writer">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">✍️</div>
+                        <div class="node-name">Writers ×N</div>
+                        <div class="node-status"></div>
+                        <div class="parallel-badge">PARALLEL</div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="merger" id="node-merger">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">🔗</div>
+                        <div class="node-name">Merger</div>
+                        <div class="node-status"></div>
+                    </div>
+                </div>
+
+                <!-- Row 3: Images → Fact Check → Revision -->
+                <div class="pipeline-row">
+                    <div class="agent-node" data-agent="images" id="node-images">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">🎨</div>
+                        <div class="node-name">Images</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="fact_checker" id="node-fact_checker">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">🕵️</div>
+                        <div class="node-name">Fact Check</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="revision" id="node-revision">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">🔧</div>
+                        <div class="node-name">Revision</div>
+                        <div class="node-status"></div>
+                    </div>
+                </div>
+
+                <!-- Row 4: Social Media → Evaluator → Done -->
+                <div class="pipeline-row">
+                    <div class="agent-node" data-agent="social_media" id="node-social_media">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">📱</div>
+                        <div class="node-name">Social Media</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="evaluator" id="node-evaluator">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">📊</div>
+                        <div class="node-name">Evaluator</div>
+                        <div class="node-status"></div>
+                    </div>
+                    <div class="connector">
+                        <div class="connector-line">
+                            <div class="connector-particle"></div>
+                        </div>
+                    </div>
+                    <div class="agent-node" data-agent="done" id="node-done">
+                        <div class="node-glow"></div>
+                        <div class="node-icon">✅</div>
+                        <div class="node-name">Complete</div>
+                        <div class="node-status"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Metrics Row -->
+            <div class="metrics-row" id="metrics-row">
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-sources">0</div>
+                    <div class="metric-label">Sources Found</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-sections">0</div>
+                    <div class="metric-label">Sections</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-words">0</div>
+                    <div class="metric-label">Words Written</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-factcheck">—</div>
+                    <div class="metric-label">Fact-Check Score</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-quality">—</div>
+                    <div class="metric-label">Quality Score</div>
+                </div>
+            </div>
+
+            <!-- Live Log Feed -->
+            <div class="log-feed-container">
+                <div class="log-header">
+                    <span>📡 Live Agent Feed</span>
+                    <div class="live-dot"></div>
+                </div>
+                <div class="log-feed" id="log-feed"></div>
+            </div>
+        </section>
+
+        <section class="glass-card results-section" id="results-section" style="display:none;">
+            <div class="section-header">
+                <div class="section-icon">🎉</div>
+                <h2>Campaign Complete</h2>
+            </div>
+            <div class="results-summary" id="results-summary"></div>
+            <div class="results-actions">
+                <button class="btn-download" id="btn-download">
+                    <span>📦 Download Full Package</span>
+                </button>
+                <button class="btn-secondary" id="btn-new">
+                    <span>🔄 New Campaign</span>
+                </button>
+            </div>
+
+            <!-- Asset Tabs -->
+            <div class="campaign-tabs" id="campaign-tabs">
+                <button class="tab-btn active" data-target="blog-preview">Blog Post</button>
+                <button class="tab-btn" data-target="email-preview">Email Sequence</button>
+                <button class="tab-btn" data-target="twitter-preview">Twitter Thread</button>
+                <button class="tab-btn" data-target="landing-preview">Landing Page</button>
+                <button class="tab-btn" data-target="linkedin-preview">LinkedIn</button>
+                <button class="tab-btn" data-target="facebook-preview">Facebook</button>
+                <button class="tab-btn" data-target="youtube-preview">YouTube</button>
+            </div>
+
+            <!-- Asset Content Areas -->
+            <div class="campaign-content active" id="blog-preview"></div>
+            <div class="campaign-content" id="email-preview"></div>
+            <div class="campaign-content" id="twitter-preview"></div>
+            <div class="campaign-content" id="landing-preview"></div>
+            <div class="campaign-content" id="linkedin-preview"></div>
+            <div class="campaign-content" id="facebook-preview"></div>
+            <div class="campaign-content" id="youtube-preview"></div>
+
+        </section>
+
+    </main>
+
+    <!-- ========================= FOOTER ========================= -->
+    <footer class="footer">
+        <span>AI Content Factory</span>
+        <span class="footer-sep">•</span>
+        <span>Multi-Agent LangGraph Pipeline</span>
+        <span class="footer-sep">•</span>
+        <span>FYP 2026</span>
+    </footer>
+
+    <script src="/frontend/app.js"></script>
+</body>
+
+</html>
