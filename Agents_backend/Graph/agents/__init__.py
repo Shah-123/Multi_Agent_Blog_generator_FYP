@@ -6,6 +6,7 @@ from .workers import fanout, worker_node, merge_content
 from .multimedia import decide_images, generate_and_place_images
 from .quality_control import qa_agent_node
 from .campaign import campaign_generator_node
+from .video import video_generator_node
 
 __all__ = [
     "router_node",
@@ -18,4 +19,5 @@ __all__ = [
     "generate_and_place_images",
     "qa_agent_node",
     "campaign_generator_node",
+    "video_generator_node",
 ]

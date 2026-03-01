@@ -27,10 +27,11 @@ from Graph.nodes import (
     worker_node, 
     fanout, 
     merge_content, 
-    decide_images, 
+    decide_images,
     generate_and_place_images,
     qa_agent_node,
     campaign_generator_node, 
+    video_generator_node,
     _safe_slug
 )
 from Graph.keyword_optimizer import keyword_optimizer_node
@@ -66,6 +67,7 @@ def create_blog_structure(topic: str) -> dict:
         "assets": f"{base_folder}/assets/images",
         "research": f"{base_folder}/research",
         "audio": f"{base_folder}/audio",
+        "video": f"{base_folder}/video",
         "metadata": f"{base_folder}/metadata"
     }
     
@@ -129,6 +131,7 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 ├── assets/
 │   └── images/                        # Generated images
 ├── audio/                             # Podcast (if generated)
+├── video/                             # Stock Video (if generated)
 └── metadata/
     ├── plan.json
     └── metadata.json
@@ -225,6 +228,13 @@ def save_blog_content(folders: dict, state: State) -> dict:
         if state.get("script_path"):
             shutil.copy(state["script_path"], f"{folders['audio']}/script.txt")
 
+    # 4.5 Video
+    if state.get("video_path") and os.path.exists(state["video_path"]):
+        import shutil
+        dest = f"{folders['video']}/short.mp4"
+        shutil.copy(state["video_path"], dest)
+        saved["video"] = dest
+
     # 5. Research Evidence
     if state.get("evidence"):
         evidence_data = [e.model_dump() if hasattr(e, 'model_dump') else e 
@@ -249,6 +259,7 @@ def save_blog_content(folders: dict, state: State) -> dict:
             "qa_report": saved.get("qa_report"),
             "keyword_report": saved.get("keyword_report"),
             "evidence": saved.get("evidence"),
+            "video": saved.get("video"),
             "plan": f"{folders['metadata']}/plan.json"
         }
     }
@@ -301,6 +312,8 @@ def build_graph(memory=None):
         workflow.add_node("audio_generator", podcast_node)
     else:
         workflow.add_node("audio_generator", lambda s: {})
+        
+    workflow.add_node("video_generator", video_generator_node)
 
     # Edges
     workflow.add_edge(START, "router")
@@ -320,28 +333,40 @@ def build_graph(memory=None):
     # FIX 3: qa_agent → keyword_optimizer (No self-healing loop)
     workflow.add_edge("qa_agent", "keyword_optimizer")
     
-    # Cost-saving conditional routing
     def after_keyword_router(s):
         if s.get("generate_campaign", True):
             return "campaign_generator"
         elif s.get("generate_audio", True) and PODCAST_AVAILABLE:
             return "audio_generator"
+        elif s.get("generate_video", True):
+            return "video_generator"
         return END
         
     workflow.add_conditional_edges("keyword_optimizer", after_keyword_router, 
-        ["campaign_generator", "audio_generator", END]
+        ["campaign_generator", "audio_generator", "video_generator", END]
     )
     
     def after_campaign_router(s):
         if s.get("generate_audio", True) and PODCAST_AVAILABLE:
             return "audio_generator"
+        if s.get("generate_video", True):
+            return "video_generator"
         return END
         
     workflow.add_conditional_edges("campaign_generator", after_campaign_router,
-        ["audio_generator", END]
+        ["audio_generator", "video_generator", END]
     )
     
-    workflow.add_edge("audio_generator", END)
+    def after_audio_router(s):
+        if s.get("generate_video", True):
+            return "video_generator"
+        return END
+        
+    workflow.add_conditional_edges("audio_generator", after_audio_router,
+        ["video_generator", END]
+    )
+    
+    workflow.add_edge("video_generator", END)
 
     return workflow.compile(
         checkpointer=memory,
@@ -399,8 +424,11 @@ def run_app():
     gen_camp_input = input("Generate Social Media Campaign? [Y/n]: ").strip().lower()
     generate_campaign = gen_camp_input != "n"
     
-    gen_aud_input = input("Generate Podcast Audio (TTS)? [Y/n]: ").strip().lower()
+    gen_aud_input = input("Generate Podcast Audio (Legacy TTS)? [Y/n]: ").strip().lower()
     generate_audio = gen_aud_input != "n"
+    
+    gen_vid_input = input("Generate Short Video (Voiceover + Captions + Pexels)? [Y/n]: ").strip().lower()
+    generate_video = gen_vid_input != "n"
     
     # 4. Get Number of Sections
     sections_input = input("\n📏 How many body sections should the blog have? (1-10) [default: 5]: ").strip()
@@ -412,7 +440,7 @@ def run_app():
         
     print(f"\n✅ Tone: {target_tone}")
     print(f"✅ Sections: {target_sections}")
-    print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Audio={'ON' if generate_audio else 'OFF'}")
+    print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Audio={'ON' if generate_audio else 'OFF'} | Video={'ON' if generate_video else 'OFF'}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
     
     # 5. Setup Folders
@@ -433,7 +461,8 @@ def run_app():
         "target_sections": target_sections,
         "generate_images": generate_images,
         "generate_campaign": generate_campaign,
-        "generate_audio": generate_audio
+        "generate_audio": generate_audio,
+        "generate_video": generate_video
     }
     
     # 6. Phase 1: Research & Planning

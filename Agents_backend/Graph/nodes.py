@@ -9,7 +9,8 @@ from .agents import (
     decide_images, 
     generate_and_place_images,
     qa_agent_node,
-    campaign_generator_node
+    campaign_generator_node,
+    video_generator_node
 )
 from .agents.utils import _safe_slug
 
@@ -24,5 +25,6 @@ __all__ = [
     "generate_and_place_images",
     "qa_agent_node",
     "campaign_generator_node",
+    "video_generator_node",
     "_safe_slug"
 ]
