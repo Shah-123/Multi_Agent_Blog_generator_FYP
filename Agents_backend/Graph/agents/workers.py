@@ -6,14 +6,48 @@ from Graph.state import State, Plan, Task, EvidenceItem
 from Graph.templates import WORKER_SYSTEM
 from .utils import logger, llm_quality, _job, _emit
 
+# ✅ FIX #4: Define the section contract explicitly.
+# Previously, workers returned raw tuples (task.id, section_md) and
+# merge_content used a fragile isinstance() guard to unpack them.
+# If anything was malformed it silently sorted to position 0,
+# potentially overwriting the intro with broken content.
+# Now the expected shape is documented and validated in one place.
+
+def _make_section(task_id: int, content: str) -> tuple:
+    """
+    The ONLY way a worker should produce a section entry.
+    Enforces the (int, str) contract used by merge_content.
+    """
+    assert isinstance(task_id, int), f"task_id must be int, got {type(task_id)}"
+    assert isinstance(content, str), f"content must be str, got {type(content)}"
+    return (task_id, content)
+
+
+def _unpack_section(entry) -> tuple:
+    """
+    Safely unpack a section entry in merge_content.
+    Raises a clear ValueError instead of silently defaulting to 0.
+    """
+    if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+        raise ValueError(
+            f"Malformed section entry: expected (int, str) tuple, got {type(entry)}: {entry!r}"
+        )
+    task_id, content = entry
+    if not isinstance(task_id, int):
+        raise ValueError(f"Section task_id must be int, got {type(task_id)}: {task_id!r}")
+    if not isinstance(content, str):
+        raise ValueError(f"Section content must be str, got {type(content)}: {content!r}")
+    return task_id, content
+
+
 def fanout(state: State):
     """Generates parallel workers for each section."""
     if not state.get("plan"):
         logger.warning("No plan found, skipping fanout.")
         return []
-    
+
     _emit(_job(state), "writer", "started", f"Dispatching {len(state['plan'].tasks)} parallel writers...")
-    
+
     return [
         Send("worker", {
             "task": task.model_dump(),
@@ -22,16 +56,26 @@ def fanout(state: State):
             "plan": state["plan"].model_dump(),
             "evidence": [e.model_dump() for e in state.get("evidence", [])],
             "_job_id": state.get("_job_id", ""),
+
+            # ✅ FIX #3: Pass all cost-saving toggle flags into the worker payload
+            # so the reducer subgraph can read them correctly.
+            # Previously these were missing, so s.get("generate_images", True)
+            # in the reducer always defaulted to True — making the toggle useless.
+            "generate_images": state.get("generate_images", True),
+            "generate_campaign": state.get("generate_campaign", True),
+            "generate_video": state.get("generate_video", True),
+            "generate_podcast": state.get("generate_podcast", True),
         })
         for task in state["plan"].tasks
     ]
+
 
 def worker_node(payload: dict) -> dict:
     task = Task(**payload["task"])
     plan = Plan(**payload["plan"])
     evidence = [EvidenceItem(**e) for e in payload.get("evidence", [])]
     job_id = payload.get("_job_id", "")
-    
+
     _emit(job_id, "writer", "working", f"Writing section {task.id + 1}/{len(plan.tasks)}: {task.title}", {"section": task.id + 1, "total": len(plan.tasks)})
     logger.info(f"✍️ Writing Section {task.id + 1}/{len(plan.tasks)}: {task.title} (Tone: {plan.tone})")
 
@@ -41,7 +85,7 @@ def worker_node(payload: dict) -> dict:
             f"- [{e.title}]({e.url}) ({e.published_at or 'Unknown Date'})\n  Content: {e.snippet[:300]}"
             for e in evidence[:15]
         )
-        
+
         section_keywords = task.tags[:3]
         keywords_str = ", ".join(section_keywords) if section_keywords else "general topic"
 
@@ -72,26 +116,26 @@ def worker_node(payload: dict) -> dict:
             ],
             max_tokens=3000
         )
-        
+
         section_md = response.content.strip()
-        
+
         lines = section_md.split('\n')
         if lines and re.match(r'^#{1,4}\s+', lines[0]):
             lines = lines[1:]
             section_md = '\n'.join(lines).strip()
         section_md = f"## {task.title}\n\n{section_md}"
-        
+
         word_count = len(section_md.split())
         if word_count < (task.target_words * 0.7):
             logger.warning(f"Section {task.id + 1} seems short ({word_count} words, target: {task.target_words})")
-        
+
         if not section_md.endswith(('.', '!', '?', '"', ')')):
             logger.warning(f"Section {task.id + 1} incomplete (doesn't end with punctuation)")
             section_md += "."
-        
+
         logger.info(f"✅ Completed: {word_count} words")
         _emit(job_id, "writer", "working", f"Completed section {task.id + 1}: {task.title} ({word_count} words)", {"section": task.id + 1, "words": word_count})
-        
+
     except Exception as e:
         import traceback
         logger.error(f"Error in section {task.title}: {e}")
@@ -99,25 +143,38 @@ def worker_node(payload: dict) -> dict:
         section_md = f"## {task.title}\n\n[Error generating content: {str(e)}]"
         _emit(job_id, "writer", "error", f"Failed section {task.id + 1}: {str(e)}")
 
-    return {"sections": [(task.id, section_md)]}
+    # ✅ FIX #4: Use _make_section() to enforce the (int, str) contract
+    # at the point of creation, not silently at consumption in merge_content.
+    return {"sections": [_make_section(task.id, section_md)]}
+
 
 def merge_content(state: State) -> dict:
     _emit(_job(state), "merger", "started", "Merging all sections into final blog...")
     logger.info("🔗 MERGING SECTIONS ---")
     plan = state["plan"]
-    
+
     unique_sections = {}
-    for task_id, content in state["sections"]:
-        unique_sections[task_id] = content
-        
+
+    # ✅ FIX #4: Use _unpack_section() instead of the fragile isinstance() lambda.
+    # Previously, malformed entries silently sorted to position 0 and could
+    # overwrite the intro with broken content — no warning, no crash.
+    # Now any malformed entry raises a clear ValueError immediately.
+    for entry in state["sections"]:
+        try:
+            task_id, content = _unpack_section(entry)
+            unique_sections[task_id] = content
+        except ValueError as e:
+            logger.error(f"Skipping malformed section entry: {e}")
+            continue
+
     ordered_content = [unique_sections[k] for k in sorted(unique_sections.keys())]
-    
+
     body = "\n\n".join(ordered_content).strip()
     merged_md = f"# {plan.blog_title}\n\n{body}\n"
-    
+
     word_count = len(merged_md.split())
     logger.info(f"✅ Merged {len(ordered_content)} sections")
     _emit(_job(state), "merger", "completed", f"Merged {len(ordered_content)} sections ({word_count} words)", {"sections": len(ordered_content), "words": word_count})
     _emit(_job(state), "writer", "completed", f"All {len(ordered_content)} sections written", {"sections": len(ordered_content), "words": word_count})
-    
+
     return {"merged_md": merged_md}

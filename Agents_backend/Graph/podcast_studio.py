@@ -6,9 +6,11 @@ from google.genai import types
 
 from Graph.agents.utils import logger, _job, _emit
 
-# Initialize Gemini Client
-api_key = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=api_key) if api_key else None
+# ✅ FIX #2: Removed module-level client initialization.
+# Previously: api_key = os.getenv("GEMINI_API_KEY") ran at import time,
+# before load_dotenv() in main.py, so gemini_client was always None.
+# Also renamed from GEMINI_API_KEY → GOOGLE_API_KEY to match
+# multimedia.py and video.py — all three files now use one consistent key name.
 
 # ============================================================================
 # PODCAST AUDIO GENERATION
@@ -24,10 +26,25 @@ RULES:
 - Tone: Educational but entertaining.
 """
 
+def _get_gemini_client():
+    """
+    Lazy initialization of the Gemini client.
+    Called at function runtime (not import time), ensuring
+    load_dotenv() in main.py has already run before we read the env var.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
+
 def generate_podcast_audio(state: dict, output_path: str) -> bool:
     """Generate a conversational podcast audio from blog content using Gemini's native audio output."""
+    
+    # ✅ FIX #2: Client is now created here at call time, not at module import time.
+    gemini_client = _get_gemini_client()
+    
     if not gemini_client:
-        logger.warning("GEMINI_API_KEY missing. Cannot generate podcast.")
+        logger.warning("GOOGLE_API_KEY missing. Cannot generate podcast.")
         return False
         
     plan = state.get("plan")
@@ -50,8 +67,6 @@ Tone: {plan.tone if plan else "conversational"}
     try:
         logger.info("🎙️ Requesting Gemini 2.5 Flash for native audio generation...")
         
-        # We use the new generate_content API with output_modality=AUDIO
-        # As per the new gemini 2.5 flash SDK, the audio format can be specified or the raw inline data can be parsed
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash-preview-tts',
             contents=[
@@ -64,8 +79,6 @@ Tone: {plan.tone if plan else "conversational"}
             )
         )
         
-        # In the new SDK, response.candidates[0].content.parts[0].inline_data.data usually holds the audio bytes.
-        # Alternatively, response.text might be empty and we extract the raw bytes.
         audio_data = None
         
         if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
@@ -102,10 +115,9 @@ def podcast_node(state: dict) -> dict:
     podcast_dir = Path("generated_podcasts")
     podcast_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Gemini outputs audio in basic formats, saving as .wav usually works out of the box for the raw buffers.
     final_path = podcast_dir / f"podcast_{timestamp}.wav"
     
-    # 1. Generate Audio
+    # Generate Audio
     logger.info(f"   ✍️ Synthesizing Podcast Audio...")
     success = generate_podcast_audio(state, str(final_path))
     

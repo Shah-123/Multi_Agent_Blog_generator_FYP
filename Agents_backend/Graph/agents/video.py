@@ -257,7 +257,11 @@ def video_generator_node(state: State) -> dict:
     
     # 1. Setup
     topic = state.get("topic", "Unknown")
-    blog_content = state.get("markdown", "")
+
+    # ✅ FIX #1: Was state.get("markdown", "") — "markdown" key does not exist in State.
+    # The finished blog post is stored under "final" by qa_agent_node.
+    # Using "markdown" caused blog_content to always be empty, silently skipping video generation every time.
+    blog_content = state.get("final", "")
     
     if not blog_content:
         logger.warning("No blog content found. Skipping video generation.")

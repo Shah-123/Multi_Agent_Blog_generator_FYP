@@ -132,11 +132,16 @@ pip install google-genai
 Create an `Agents_backend/.env` file with the following API keys:
 
 ```ini
-OPENAI_API_KEY=sk-...          # Required: Core LLM reasoning for Text & Graph routing
-TAVILY_API_KEY=tvly-...        # Required: Web research scraper
-GEMINI_API_KEY=AIzaSy...       # Required: Native audio generation for Podcast Studio
-PEXELS_API_KEY=...             # Required: B-roll stock video fetching
+OPENAI_API_KEY=sk-...       # Required: Core LLM reasoning for Text & Graph routing
+TAVILY_API_KEY=tvly-...     # Required: Web research scraper
+GOOGLE_API_KEY=AIzaSy...    # Required: Used by Podcast Studio, Image Gen, and Video TTS (Gemini)
+PEXELS_API_KEY=...          # Required: B-roll stock video fetching
 ```
+
+> ⚠️ **One key for all Google/Gemini services.** `GOOGLE_API_KEY` is used by the
+> Podcast Studio, the Image Generator, and the Video voiceover — do **not** create
+> a separate `GEMINI_API_KEY`. Any previous `.env` files using `GEMINI_API_KEY`
+> must be updated to `GOOGLE_API_KEY`.
 
 ---
 
