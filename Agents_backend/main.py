@@ -32,21 +32,13 @@ from Graph.nodes import (
     qa_agent_node,
     campaign_generator_node, 
     video_generator_node,
+    podcast_node,
     _safe_slug
 )
 from Graph.keyword_optimizer import keyword_optimizer_node
 from validators import TopicValidator
 
-# ===========================================================================
-# PODCAST IMPORT WITH FALLBACK
-# ===========================================================================
-try:
-    from Graph.podcast_studio import podcast_node
-    PODCAST_AVAILABLE = True
-except ImportError:
-    PODCAST_AVAILABLE = False
-    def podcast_node(state: dict) -> dict:
-        return {"audio_path": None, "script_path": None}
+
 
 # ===========================================================================
 # 1. HELPER FUNCTIONS
@@ -219,14 +211,12 @@ def save_blog_content(folders: dict, state: State) -> dict:
         Path(path).write_text(state["keyword_report"], encoding="utf-8")
         saved["keyword_report"] = path
 
-    # 4. Audio
-    if state.get("audio_path") and os.path.exists(state["audio_path"]):
+    # 4. Audio - Gemini Podcast
+    if state.get("podcast_audio_path") and os.path.exists(state["podcast_audio_path"]):
         import shutil
-        dest = f"{folders['audio']}/podcast.mp3"
-        shutil.copy(state["audio_path"], dest)
-        saved["audio"] = dest
-        if state.get("script_path"):
-            shutil.copy(state["script_path"], f"{folders['audio']}/script.txt")
+        dest = f"{folders['audio']}/podcast.wav"
+        shutil.copy(state["podcast_audio_path"], dest)
+        saved["podcast"] = dest
 
     # 4.5 Video
     if state.get("video_path") and os.path.exists(state["video_path"]):
@@ -260,6 +250,7 @@ def save_blog_content(folders: dict, state: State) -> dict:
             "keyword_report": saved.get("keyword_report"),
             "evidence": saved.get("evidence"),
             "video": saved.get("video"),
+            "podcast": saved.get("podcast"),
             "plan": f"{folders['metadata']}/plan.json"
         }
     }
@@ -307,13 +298,8 @@ def build_graph(memory=None):
     workflow.add_node("qa_agent", qa_agent_node)
     workflow.add_node("keyword_optimizer", keyword_optimizer_node)
     workflow.add_node("campaign_generator", campaign_generator_node)
-    
-    if PODCAST_AVAILABLE:
-        workflow.add_node("audio_generator", podcast_node)
-    else:
-        workflow.add_node("audio_generator", lambda s: {})
-        
     workflow.add_node("video_generator", video_generator_node)
+    workflow.add_node("podcast_generator", podcast_node)
 
     # Edges
     workflow.add_edge(START, "router")
@@ -334,39 +320,23 @@ def build_graph(memory=None):
     workflow.add_edge("qa_agent", "keyword_optimizer")
     
     def after_keyword_router(s):
+        destinations = []
         if s.get("generate_campaign", True):
-            return "campaign_generator"
-        elif s.get("generate_audio", True) and PODCAST_AVAILABLE:
-            return "audio_generator"
-        elif s.get("generate_video", True):
-            return "video_generator"
-        return END
+            destinations.append("campaign_generator")
+        if s.get("generate_video", True):
+            destinations.append("video_generator")
+        if s.get("generate_podcast", True):
+            destinations.append("podcast_generator")
+            
+        return destinations if destinations else END
         
     workflow.add_conditional_edges("keyword_optimizer", after_keyword_router, 
-        ["campaign_generator", "audio_generator", "video_generator", END]
+        ["campaign_generator", "video_generator", "podcast_generator", END]
     )
     
-    def after_campaign_router(s):
-        if s.get("generate_audio", True) and PODCAST_AVAILABLE:
-            return "audio_generator"
-        if s.get("generate_video", True):
-            return "video_generator"
-        return END
-        
-    workflow.add_conditional_edges("campaign_generator", after_campaign_router,
-        ["audio_generator", "video_generator", END]
-    )
-    
-    def after_audio_router(s):
-        if s.get("generate_video", True):
-            return "video_generator"
-        return END
-        
-    workflow.add_conditional_edges("audio_generator", after_audio_router,
-        ["video_generator", END]
-    )
-    
+    workflow.add_edge("campaign_generator", END)
     workflow.add_edge("video_generator", END)
+    workflow.add_edge("podcast_generator", END)
 
     return workflow.compile(
         checkpointer=memory,
@@ -424,11 +394,11 @@ def run_app():
     gen_camp_input = input("Generate Social Media Campaign? [Y/n]: ").strip().lower()
     generate_campaign = gen_camp_input != "n"
     
-    gen_aud_input = input("Generate Podcast Audio (Legacy TTS)? [Y/n]: ").strip().lower()
-    generate_audio = gen_aud_input != "n"
-    
     gen_vid_input = input("Generate Short Video (Voiceover + Captions + Pexels)? [Y/n]: ").strip().lower()
     generate_video = gen_vid_input != "n"
+    
+    gen_pod_input = input("Generate Audio Podcast (Gemini)? [Y/n]: ").strip().lower()
+    generate_podcast = gen_pod_input != "n"
     
     # 4. Get Number of Sections
     sections_input = input("\n📏 How many body sections should the blog have? (1-10) [default: 5]: ").strip()
@@ -440,7 +410,7 @@ def run_app():
         
     print(f"\n✅ Tone: {target_tone}")
     print(f"✅ Sections: {target_sections}")
-    print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Audio={'ON' if generate_audio else 'OFF'} | Video={'ON' if generate_video else 'OFF'}")
+    print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Video={'ON' if generate_video else 'OFF'} | Podcast={'ON' if generate_podcast else 'OFF'}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
     
     # 5. Setup Folders
@@ -461,8 +431,8 @@ def run_app():
         "target_sections": target_sections,
         "generate_images": generate_images,
         "generate_campaign": generate_campaign,
-        "generate_audio": generate_audio,
-        "generate_video": generate_video
+        "generate_video": generate_video,
+        "generate_podcast": generate_podcast
     }
     
     # 6. Phase 1: Research & Planning
