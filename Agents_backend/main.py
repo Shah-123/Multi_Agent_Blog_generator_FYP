@@ -36,14 +36,11 @@ from Graph.nodes import (
     _safe_slug
 )
 from Graph.keyword_optimizer import keyword_optimizer_node
-
-# ✅ FIX #5: Import completion_validator — it was built but never imported or
-# wired into the graph. It now runs between the reducer and qa_agent,
-# fixing structural issues (missing sections, word count, broken placeholders)
-# before the QA agent grades content quality.
 from Graph.completion_validator import validate_completion
+from validators import TopicValidator, blog_evaluator_node
 
-from validators import TopicValidator
+import logging
+logger = logging.getLogger("blog_pipeline")
 
 
 # ===========================================================================
@@ -52,20 +49,19 @@ from validators import TopicValidator
 
 def create_blog_structure(topic: str) -> dict:
     """Creates organized folder structure for the blog."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_topic = _safe_slug(topic)[:50]
-
     base_folder = f"blogs/{safe_topic}_{timestamp}"
 
     folders = {
-        "base": base_folder,
-        "content": f"{base_folder}/content",
-        "social": f"{base_folder}/social_media",
-        "reports": f"{base_folder}/reports",
-        "assets": f"{base_folder}/assets/images",
+        "base":     base_folder,
+        "content":  f"{base_folder}/content",
+        "social":   f"{base_folder}/social_media",
+        "reports":  f"{base_folder}/reports",
+        "assets":   f"{base_folder}/assets/images",
         "research": f"{base_folder}/research",
-        "audio": f"{base_folder}/audio",
-        "video": f"{base_folder}/video",
+        "audio":    f"{base_folder}/audio",
+        "video":    f"{base_folder}/video",
         "metadata": f"{base_folder}/metadata"
     }
 
@@ -74,10 +70,11 @@ def create_blog_structure(topic: str) -> dict:
 
     return folders
 
+
 def refine_plan_with_llm(current_plan: Plan, feedback: str) -> Plan:
     """Refines the plan based on human feedback."""
     print(f"\n   🤖 Refining plan based on: '{feedback}'...")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm    = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     editor = llm.with_structured_output(Plan)
 
     return editor.invoke([
@@ -85,21 +82,19 @@ def refine_plan_with_llm(current_plan: Plan, feedback: str) -> Plan:
         HumanMessage(content=f"Current Plan:\n{current_plan.model_dump_json()}\n\nFeedback: {feedback}")
     ])
 
+
 def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
-    """Generates a README.md file summarizing the project generation."""
-    topic = state.get("topic", "Unknown Topic")
-    tone = state.get("target_tone", "N/A")
-    keywords = state.get("target_keywords", [])
-    score = state.get("qa_score", "N/A")
+    """Generates a README.md summarizing the generation run."""
+    topic      = state.get("topic", "Unknown Topic")
+    tone       = state.get("target_tone", "N/A")
+    keywords   = state.get("target_keywords", [])
+    qa_score   = state.get("qa_score", "N/A")
+    eval_score = state.get("blog_evaluator_score", "N/A")
     word_count = len(state.get("final", "").split())
+    blog_file  = os.path.basename(saved_files.get("blog", "blog.md"))
 
-    blog_file = os.path.basename(saved_files.get("blog", "blog.md"))
-
-    plan = state.get("plan")
-    if plan:
-        audience = plan.audience if hasattr(plan, 'audience') else "General"
-    else:
-        audience = "General"
+    plan     = state.get("plan")
+    audience = plan.audience if plan and hasattr(plan, "audience") else "General"
 
     md = f"""# {topic}
 
@@ -114,20 +109,17 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 ```
 {os.path.basename(folders['base'])}/
 ├── content/
-│   └── {blog_file}                    # Main blog post with images
+│   └── {blog_file}
 ├── social_media/
-│   ├── linkedin_*.txt
-│   ├── youtube_*.txt
-│   └── facebook_*.txt
 ├── reports/
 │   ├── qa_report.txt
+│   ├── blog_evaluator_report.txt
 │   └── keyword_optimization.txt
 ├── research/
 │   └── evidence.json
-├── assets/
-│   └── images/                        # Generated images
-├── audio/                             # Podcast (if generated)
-├── video/                             # Stock Video (if generated)
+├── assets/images/
+├── audio/
+├── video/
 └── metadata/
     ├── plan.json
     └── metadata.json
@@ -139,18 +131,14 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
 
 ---
 
-### Quality Score: {score}/10
+### QA Score: {qa_score}/10
+### Blog Evaluator Score: {eval_score}/10
 
 ## 🎯 SEO Details
 - **Target Keywords**: {', '.join(keywords) if keywords else 'None specified'}
 - **Tone**: {tone}
 - **Mode**: {state.get("mode")}
 - **Evidence Sources**: {len(state.get("evidence", []))}
-
-## 🚀 How to Use
-1. **Main Blog**: Open `content/{blog_file}` in any markdown viewer
-2. **Social Media**: Copy content from `social_media/` files
-3. **Reports**: Check `reports/` for quality analysis
 
 ## ⚙️ Generation Details
 - **Mode**: {state.get("mode")}
@@ -164,11 +152,13 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
     Path(readme_path).write_text(md, encoding="utf-8")
     return readme_path
 
+
 def save_blog_content(folders: dict, state: State) -> dict:
     """Saves all outputs to their respective folders."""
     saved = {}
-    plan = state.get("plan")
-    if not plan: return saved
+    plan  = state.get("plan")
+    if not plan:
+        return saved
 
     slug = _safe_slug(plan.blog_title)
 
@@ -180,23 +170,15 @@ def save_blog_content(folders: dict, state: State) -> dict:
         print(f"   ✅ Saved blog: {os.path.basename(path)}")
 
     # 2. Campaign Assets
-    for platform in ["linkedin", "facebook", "youtube", "twitter", "email", "landing_page"]:
-        if platform == "youtube":
-            key = "youtube_script"
-            ext = "txt"
-        elif platform == "email":
-            key = "email_sequence"
-            ext = "md"
-        elif platform == "twitter":
-            key = "twitter_thread"
-            ext = "md"
-        elif platform == "landing_page":
-            key = "landing_page"
-            ext = "md"
-        else:
-            key = f"{platform}_post"
-            ext = "txt"
-
+    platform_map = {
+        "linkedin":    ("linkedin_post",  "txt"),
+        "facebook":    ("facebook_post",  "txt"),
+        "youtube":     ("youtube_script", "txt"),
+        "twitter":     ("twitter_thread", "md"),
+        "email":       ("email_sequence", "md"),
+        "landing_page":("landing_page",   "md"),
+    }
+    for platform, (key, ext) in platform_map.items():
         if state.get(key):
             path = f"{folders['social']}/{platform}_{slug}.{ext}"
             Path(path).write_text(state[key], encoding="utf-8")
@@ -208,12 +190,17 @@ def save_blog_content(folders: dict, state: State) -> dict:
         Path(path).write_text(state["qa_report"], encoding="utf-8")
         saved["qa_report"] = path
 
+    if state.get("blog_evaluator_report"):
+        path = f"{folders['reports']}/blog_evaluator_report.txt"
+        Path(path).write_text(state["blog_evaluator_report"], encoding="utf-8")
+        saved["blog_evaluator_report"] = path
+        print(f"   ✅ Saved blog evaluator report")
+
     if state.get("keyword_report"):
         path = f"{folders['reports']}/keyword_optimization.txt"
         Path(path).write_text(state["keyword_report"], encoding="utf-8")
         saved["keyword_report"] = path
 
-    # ✅ FIX #5: Save the completion report now that the node is wired in.
     if state.get("completion_report"):
         path = f"{folders['reports']}/completion_report.txt"
         Path(path).write_text(state["completion_report"], encoding="utf-8")
@@ -235,40 +222,45 @@ def save_blog_content(folders: dict, state: State) -> dict:
 
     # 6. Research Evidence
     if state.get("evidence"):
-        evidence_data = [e.model_dump() if hasattr(e, 'model_dump') else e
-                        for e in state["evidence"]]
+        evidence_data = [
+            e.model_dump() if hasattr(e, "model_dump") else e
+            for e in state["evidence"]
+        ]
         path = f"{folders['research']}/evidence.json"
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(evidence_data, f, indent=2)
         saved["evidence"] = path
 
     # 7. Metadata
     meta = {
-        "topic": state.get("topic"),
-        "as_of": state.get("as_of"),
-        "mode": state.get("mode"),
-        "generated_at": datetime.now().isoformat(),
-        "word_count": len(state.get("final", "").split()),
-        "target_tone": state.get("target_tone"),
-        "target_keywords": state.get("target_keywords", []),
+        "topic":                 state.get("topic"),
+        "as_of":                 state.get("as_of"),
+        "mode":                  state.get("mode"),
+        "generated_at":          datetime.now().isoformat(),
+        "word_count":            len(state.get("final", "").split()),
+        "target_tone":           state.get("target_tone"),
+        "target_keywords":       state.get("target_keywords", []),
+        "qa_score":              state.get("qa_score"),
+        "qa_verdict":            state.get("qa_verdict"),
+        "blog_evaluator_score":  state.get("blog_evaluator_score"),
         "file_paths": {
-            "blog": saved.get("blog"),
-            "assets": [saved.get(k) for k in ["linkedin", "youtube", "facebook", "twitter", "email", "landing_page"] if saved.get(k)],
-            "qa_report": saved.get("qa_report"),
-            "completion_report": saved.get("completion_report"),
-            "keyword_report": saved.get("keyword_report"),
-            "evidence": saved.get("evidence"),
-            "video": saved.get("video"),
-            "podcast": saved.get("podcast"),
-            "plan": f"{folders['metadata']}/plan.json"
+            "blog":                  saved.get("blog"),
+            "qa_report":             saved.get("qa_report"),
+            "blog_evaluator_report": saved.get("blog_evaluator_report"),
+            "completion_report":     saved.get("completion_report"),
+            "keyword_report":        saved.get("keyword_report"),
+            "evidence":              saved.get("evidence"),
+            "video":                 saved.get("video"),
+            "podcast":               saved.get("podcast"),
+            "plan":                  f"{folders['metadata']}/plan.json",
         }
     }
 
-    with open(f"{folders['metadata']}/metadata.json", 'w', encoding='utf-8') as f:
+    with open(f"{folders['metadata']}/metadata.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     if plan:
-        with open(f"{folders['metadata']}/plan.json", 'w', encoding='utf-8') as f:
+        with open(f"{folders['metadata']}/plan.json", "w", encoding="utf-8") as f:
             json.dump(plan.model_dump(), f, indent=2)
 
     return saved
@@ -277,62 +269,121 @@ def save_blog_content(folders: dict, state: State) -> dict:
 # ===========================================================================
 # 2. BUILD GRAPH
 # ===========================================================================
+
+def _after_qa(state: State) -> str:
+    """
+    ✅ FIX: Act on the QA verdict instead of always proceeding silently.
+
+    Previously qa_verdict was stored in state but the graph always moved to
+    keyword_optimizer regardless of the result. A NEEDS_REVISION verdict with
+    critical issues (hallucinated stats, invented case studies) was effectively
+    ignored — the blog was saved and presented as complete.
+
+    Now:
+    - NEEDS_REVISION with critical issues → logs a loud WARNING listing each
+      flagged issue so the user knows the blog needs review before publishing.
+    - READY or minor issues only → proceeds normally, no interruption.
+
+    A full automated revision loop (re-running writers on flagged sections)
+    is the ideal next step but is expensive. This gives you visibility now
+    without adding latency to every run.
+    """
+    verdict = state.get("qa_verdict", "READY")
+    issues  = state.get("qa_issues", [])
+
+    if verdict == "NEEDS_REVISION":
+        critical = [i for i in issues if i.get("severity") == "critical"]
+
+        if critical:
+            logger.warning("=" * 60)
+            logger.warning(
+                f"⚠️  QA VERDICT: NEEDS_REVISION — "
+                f"{len(critical)} CRITICAL issue(s) detected."
+            )
+            logger.warning(
+                "   The blog has been saved but should be reviewed "
+                "before publishing."
+            )
+            for i, issue in enumerate(critical, 1):
+                logger.warning(
+                    f"   [{i}] {issue.get('issue_type', 'unknown').upper()}: "
+                    f"{issue.get('claim', '')[:120]}"
+                )
+                logger.warning(
+                    f"       Fix: {issue.get('recommendation', '')[:120]}"
+                )
+            logger.warning("=" * 60)
+        else:
+            # Minor issues only — log briefly and continue
+            logger.warning(
+                f"⚠️  QA verdict: NEEDS_REVISION ({len(issues)} minor issue(s)). "
+                f"Review recommended but not blocking."
+            )
+
+    return "keyword_optimizer"
+
+
 def build_graph(memory=None):
     """Build the LangGraph workflow with all nodes."""
 
     if memory is None:
         memory = MemorySaver()
 
-    # Subgraph for Reducer
+    # --- Subgraph: Reducer ---
     reducer = StateGraph(State)
-    reducer.add_node("merge_content", merge_content)
-    reducer.add_node("decide_images", decide_images)
+    reducer.add_node("merge_content",             merge_content)
+    reducer.add_node("decide_images",             decide_images)
     reducer.add_node("generate_and_place_images", generate_and_place_images)
     reducer.add_edge(START, "merge_content")
 
-    reducer.add_conditional_edges("merge_content",
+    reducer.add_conditional_edges(
+        "merge_content",
         lambda s: "decide_images" if s.get("generate_images", True) else END
     )
-
-    reducer.add_edge("decide_images", "generate_and_place_images")
+    reducer.add_edge("decide_images",             "generate_and_place_images")
     reducer.add_edge("generate_and_place_images", END)
 
-    # Main Graph
+    # --- Main Graph ---
     workflow = StateGraph(State)
-    workflow.add_node("router", router_node)
-    workflow.add_node("research", research_node)
-    workflow.add_node("orchestrator", orchestrator_node)
-    workflow.add_node("worker", worker_node)
-    workflow.add_node("reducer", reducer.compile())
 
-    # ✅ FIX #5: Add completion_validator as a node between reducer and qa_agent.
-    # It runs structural checks and auto-fixes BEFORE the QA agent grades quality.
-    # Previously this node existed in completion_validator.py but was never added
-    # to the graph — meaning it never ran at all.
+    workflow.add_node("router",               router_node)
+    workflow.add_node("research",             research_node)
+    workflow.add_node("orchestrator",         orchestrator_node)
+    workflow.add_node("worker",               worker_node)
+    workflow.add_node("reducer",              reducer.compile())
     workflow.add_node("completion_validator", validate_completion)
+    workflow.add_node("qa_agent",             qa_agent_node)
+    workflow.add_node("keyword_optimizer",    keyword_optimizer_node)
+    workflow.add_node("blog_evaluator",       blog_evaluator_node)
+    workflow.add_node("campaign_generator",   campaign_generator_node)
+    workflow.add_node("video_generator",      video_generator_node)
+    workflow.add_node("podcast_generator",    podcast_node)
 
-    workflow.add_node("qa_agent", qa_agent_node)
-    workflow.add_node("keyword_optimizer", keyword_optimizer_node)
-    workflow.add_node("campaign_generator", campaign_generator_node)
-    workflow.add_node("video_generator", video_generator_node)
-    workflow.add_node("podcast_generator", podcast_node)
-
-    # Edges
+    # --- Edges ---
     workflow.add_edge(START, "router")
-    workflow.add_conditional_edges("router",
+
+    workflow.add_conditional_edges(
+        "router",
         lambda s: "research" if s["needs_research"] else "orchestrator"
     )
-    workflow.add_edge("research", "orchestrator")
-    workflow.add_conditional_edges("orchestrator", fanout, ["worker"])
-    workflow.add_edge("worker", "reducer")
 
-    # ✅ FIX #5: reducer → completion_validator → qa_agent (was reducer → qa_agent)
-    workflow.add_edge("reducer", "completion_validator")
+    workflow.add_edge("research",             "orchestrator")
+    workflow.add_conditional_edges("orchestrator", fanout, ["worker"])
+    workflow.add_edge("worker",               "reducer")
+    workflow.add_edge("reducer",              "completion_validator")
     workflow.add_edge("completion_validator", "qa_agent")
 
-    workflow.add_edge("qa_agent", "keyword_optimizer")
+    # ✅ FIX: qa_agent → _after_qa (logs critical issues) → keyword_optimizer
+    # Previously this was a plain edge that silently ignored the verdict.
+    workflow.add_conditional_edges(
+        "qa_agent",
+        _after_qa,
+        ["keyword_optimizer"]
+    )
 
-    def after_keyword_router(s):
+    workflow.add_edge("keyword_optimizer", "blog_evaluator")
+
+    def after_evaluator_router(s):
         destinations = []
         if s.get("generate_campaign", True):
             destinations.append("campaign_generator")
@@ -342,13 +393,15 @@ def build_graph(memory=None):
             destinations.append("podcast_generator")
         return destinations if destinations else END
 
-    workflow.add_conditional_edges("keyword_optimizer", after_keyword_router,
+    workflow.add_conditional_edges(
+        "blog_evaluator",
+        after_evaluator_router,
         ["campaign_generator", "video_generator", "podcast_generator", END]
     )
 
     workflow.add_edge("campaign_generator", END)
-    workflow.add_edge("video_generator", END)
-    workflow.add_edge("podcast_generator", END)
+    workflow.add_edge("video_generator",    END)
+    workflow.add_edge("podcast_generator",  END)
 
     return workflow.compile(
         checkpointer=memory,
@@ -359,14 +412,16 @@ def build_graph(memory=None):
 # ===========================================================================
 # 3. MAIN RUNNER
 # ===========================================================================
+
 def run_app():
-    print("="*80)
+    print("=" * 80)
     print("🚀 AI CONTENT FACTORY (FYP EDITION)")
-    print("="*80)
+    print("=" * 80)
 
     # 1. Input & Validation
     topic = input("\n📝 Enter blog topic: ").strip()
-    if not topic: return
+    if not topic:
+        return
 
     valid = TopicValidator().validate(topic)
     if not valid["valid"]:
@@ -375,7 +430,7 @@ def run_app():
 
     print(f"✅ Topic Accepted: {topic}")
 
-    # 2. Get Tone
+    # 2. Tone
     print("\n🎨 Select Tone:")
     print("1. Professional (formal, data-driven)")
     print("2. Conversational (friendly, relatable)")
@@ -385,39 +440,28 @@ def run_app():
     print("6. Inspirational (motivating, aspirational)")
 
     tone_map = {
-        "1": "professional",
-        "2": "conversational",
-        "3": "technical",
-        "4": "educational",
-        "5": "persuasive",
-        "6": "inspirational"
+        "1": "professional", "2": "conversational",
+        "3": "technical",    "4": "educational",
+        "5": "persuasive",   "6": "inspirational"
     }
+    tone_choice  = input("Choose (1-6) [default: 1]: ").strip() or "1"
+    target_tone  = tone_map.get(tone_choice, "professional")
 
-    tone_choice = input("Choose (1-6) [default: 1]: ").strip() or "1"
-    target_tone = tone_map.get(tone_choice, "professional")
-
-    # 3. Get Keywords
-    keywords_input = input("\n🎯 Enter target keywords (comma-separated, or press Enter to skip): ").strip()
+    # 3. Keywords
+    keywords_input  = input("\n🎯 Enter target keywords (comma-separated, or press Enter to skip): ").strip()
     target_keywords = [k.strip() for k in keywords_input.split(",")] if keywords_input else []
 
+    # 4. Cost-Saving Toggles
     print("\n💰 Cost-Saving Options (Press Enter for Yes):")
-    gen_img_input = input("Generate Images (Gemini)? [Y/n]: ").strip().lower()
-    generate_images = gen_img_input != "n"
+    generate_images   = input("Generate Images (Gemini)? [Y/n]: ").strip().lower() != "n"
+    generate_campaign = input("Generate Social Media Campaign? [Y/n]: ").strip().lower() != "n"
+    generate_video    = input("Generate Short Video (Voiceover + Captions + Pexels)? [Y/n]: ").strip().lower() != "n"
+    generate_podcast  = input("Generate Audio Podcast (Gemini)? [Y/n]: ").strip().lower() != "n"
 
-    gen_camp_input = input("Generate Social Media Campaign? [Y/n]: ").strip().lower()
-    generate_campaign = gen_camp_input != "n"
-
-    gen_vid_input = input("Generate Short Video (Voiceover + Captions + Pexels)? [Y/n]: ").strip().lower()
-    generate_video = gen_vid_input != "n"
-
-    gen_pod_input = input("Generate Audio Podcast (Gemini)? [Y/n]: ").strip().lower()
-    generate_podcast = gen_pod_input != "n"
-
-    # 4. Get Number of Sections
-    sections_input = input("\n📏 How many body sections should the blog have? (1-10) [default: 5]: ").strip()
+    # 5. Number of Sections
+    sections_input = input("\n📏 How many body sections? (1-10) [default: 5]: ").strip()
     try:
-        target_sections = int(sections_input) if sections_input else 5
-        target_sections = max(1, min(10, target_sections))
+        target_sections = max(1, min(10, int(sections_input))) if sections_input else 5
     except ValueError:
         target_sections = 5
 
@@ -426,53 +470,54 @@ def run_app():
     print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Video={'ON' if generate_video else 'OFF'} | Podcast={'ON' if generate_podcast else 'OFF'}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
 
-    # 5. Setup Folders
+    # 6. Folders
     folders = create_blog_structure(topic)
     print(f"📁 Working Directory: {folders['base']}")
 
-    # 6. Graph Config
-    app = build_graph()
+    # 7. Graph
+    app    = build_graph()
     thread = {"configurable": {"thread_id": f"job_{datetime.now().strftime('%M%S')}"}}
 
     initial_state = {
-        "topic": topic,
-        "as_of": date.today().isoformat(),
-        "sections": [],
-        "blog_folder": folders["base"],
-        "target_tone": target_tone,
-        "target_keywords": target_keywords,
-        "target_sections": target_sections,
-        "generate_images": generate_images,
+        "topic":             topic,
+        "as_of":             date.today().isoformat(),
+        "sections":          [],
+        "blog_folder":       folders["base"],
+        "target_tone":       target_tone,
+        "target_keywords":   target_keywords,
+        "target_sections":   target_sections,
+        "generate_images":   generate_images,
         "generate_campaign": generate_campaign,
-        "generate_video": generate_video,
-        "generate_podcast": generate_podcast
+        "generate_video":    generate_video,
+        "generate_podcast":  generate_podcast,
     }
 
-    # 7. Phase 1: Research & Planning
+    # 8. Phase 1: Research & Planning
     print("\n🚀 PHASE 1: RESEARCH & PLANNING")
-    for _ in app.stream(initial_state, thread, stream_mode="values"): pass
+    for _ in app.stream(initial_state, thread, stream_mode="values"):
+        pass
 
-    # 8. Human-in-the-Loop Review
+    # 9. Human-in-the-Loop Review
     state = app.get_state(thread).values
-    plan = state.get("plan")
+    plan  = state.get("plan")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"📋 DRAFT PLAN: {plan.blog_title}")
     print(f"🎨 Tone: {plan.tone}")
     if plan.primary_keywords:
         print(f"🎯 Keywords: {', '.join(plan.primary_keywords)}")
-    print("="*60)
+    print("=" * 60)
 
     for t in plan.tasks:
         keyword_tags = f" [{', '.join(t.tags[:2])}]" if t.tags else ""
-        print(f"   {t.id+1}. {t.title}{keyword_tags}")
+        print(f"   {t.id + 1}. {t.title}{keyword_tags}")
 
     while True:
         feedback = input("\n✅ Approved? (y/n): ").lower()
-        if feedback == 'y':
+        if feedback == "y":
             break
-        elif feedback == 'n':
-            notes = input("💬 Enter changes: ")
+        elif feedback == "n":
+            notes    = input("💬 Enter changes: ")
             new_plan = refine_plan_with_llm(plan, notes)
             app.update_state(thread, {"plan": new_plan})
             plan = new_plan
@@ -480,26 +525,39 @@ def run_app():
             for t in plan.tasks:
                 print(f"   - {t.title}")
 
-    # 9. Phase 2: Execution
+    # 10. Phase 2: Execution
     print("\n🚀 PHASE 2: WRITING & PRODUCTION")
-    for _ in app.stream(None, thread, stream_mode="values", recursion_limit=150): pass
+    for _ in app.stream(None, thread, stream_mode="values", recursion_limit=150):
+        pass
 
-    # 10. Final Saving
+    # 11. Save
     final_state = app.get_state(thread).values
     print("\n💾 SAVING ASSETS...")
     saved_files = save_blog_content(folders, final_state)
-    readme = generate_readme(folders, saved_files, final_state)
+    readme      = generate_readme(folders, saved_files, final_state)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("✨ GENERATION COMPLETE ✨")
     print(f"📂 Output Folder: {folders['base']}")
-    print(f"📖 Read Summary: {readme}")
+    print(f"📖 Read Summary:  {readme}")
+
+    qa_score   = final_state.get("qa_score", "N/A")
+    qa_verdict = final_state.get("qa_verdict", "N/A")
+    eval_score = final_state.get("blog_evaluator_score", "N/A")
+
+    print(f"\n📊 QA Score:             {qa_score}/10  ({qa_verdict})")
+    print(f"📊 Blog Evaluator Score: {eval_score}/10")
 
     if final_state.get("keyword_report"):
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print(final_state["keyword_report"])
 
-    print("="*80)
+    if final_state.get("blog_evaluator_report"):
+        print("\n" + "=" * 60)
+        print(final_state["blog_evaluator_report"])
+
+    print("=" * 80)
+
 
 if __name__ == "__main__":
     run_app()
