@@ -109,7 +109,7 @@ def generate_tts_voiceover(text: str, voice: str = "Puck") -> str:
         
     try:
         response = gemini_client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash-preview-tts',
             contents=text,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],

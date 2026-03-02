@@ -53,7 +53,7 @@ Tone: {plan.tone if plan else "conversational"}
         # We use the new generate_content API with output_modality=AUDIO
         # As per the new gemini 2.5 flash SDK, the audio format can be specified or the raw inline data can be parsed
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.5-flash-preview-tts',
             contents=[
                prompt
             ],
