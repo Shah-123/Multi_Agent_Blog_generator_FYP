@@ -13,6 +13,7 @@ from .agents import (
     video_generator_node
 )
 from .agents.utils import _safe_slug
+from .podcast_studio import podcast_node
 
 __all__ = [
     "router_node",
@@ -26,5 +27,6 @@ __all__ = [
     "qa_agent_node",
     "campaign_generator_node",
     "video_generator_node",
+    "podcast_node",
     "_safe_slug"
 ]

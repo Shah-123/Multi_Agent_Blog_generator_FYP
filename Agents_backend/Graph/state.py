@@ -128,10 +128,9 @@ class State(TypedDict, total=False):
     twitter_thread: str
     landing_page: str
 
-    # --- Podcast & Video Outputs ---
-    audio_path: Optional[str]   # Path to the MP3 file
-    script_path: Optional[str]  # Path to the text script
+    # --- Video & Audio Outputs ---
     video_path: Optional[str]   # Path to the finalized MP4 video with stock footage
+    podcast_audio_path: Optional[str] # Path to the generated Gemini podcast audio
     
     # --- Keyword Optimization ---
     keyword_analysis: dict      # Detailed keyword metrics
@@ -140,5 +139,5 @@ class State(TypedDict, total=False):
     # --- Cost Saving Flags ---
     generate_images: bool       # Whether to run DALL-E (or Gemini)
     generate_campaign: bool     # Whether to run multi-agent social campaign
-    generate_audio: bool        # Whether to run TTS podcast
     generate_video: bool        # Whether to generate stock video (Pexels)
+    generate_podcast: bool      # Whether to generate AI Podcast via Gemini
