@@ -11,7 +11,7 @@ from typing import Dict, List
 # Previously this file AND quality_control.py both contained identical code for
 # fixing incomplete sentences and removing broken image placeholders.
 # That logic now lives in fixes.py — one place to maintain, two places to use.
-from Graph.fixes import apply_all_fixes
+from Graph.Fixes import apply_all_fixes
 
 
 def validate_completion(state: dict) -> dict:

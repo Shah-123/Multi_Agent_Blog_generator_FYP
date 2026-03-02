@@ -9,11 +9,15 @@ from Graph.state import State, EvidencePack
 from Graph.templates import RESEARCH_SYSTEM
 from .utils import logger, llm, _job, _emit
 
-# ✅ FIX #8: Similarity threshold for near-duplicate detection.
+# ✅ FIX: Similarity threshold for near-duplicate detection.
 # Two snippets are considered duplicates if they share this proportion
 # of words. 0.65 catches syndicated articles (same content, different URLs)
 # without being so aggressive it drops genuinely related sources.
 _DUPLICATE_SIMILARITY_THRESHOLD = 0.65
+
+# ✅ FIX: Fallback recency window used when the router did not set recency_days.
+# Matches the closed_book default in routing.py (10 years).
+_DEFAULT_RECENCY_DAYS = 3650
 
 
 def _snippet_fingerprint(snippet: str) -> set:
@@ -48,13 +52,23 @@ def _is_near_duplicate(snippet: str, seen_fingerprints: List[set]) -> bool:
     return False
 
 
-def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
-    """Safe Tavily search wrapper."""
+def _tavily_search(query: str, max_results: int = 5, recency_days: int = _DEFAULT_RECENCY_DAYS) -> List[dict]:
+    """
+    Safe Tavily search wrapper.
+
+    ✅ FIX: recency_days is now accepted as a parameter and forwarded to
+    Tavily's `days` argument. Previously this was hardcoded to no filter,
+    meaning open_book topics (e.g. "AI trends 2026") could return articles
+    from years ago while routing.py had already correctly computed that only
+    the last 7 days were relevant. The value flows:
+
+        routing.py  →  state["recency_days"]  →  research_node  →  here
+    """
     if not os.getenv("TAVILY_API_KEY"):
         logger.warning("TAVILY_API_KEY missing. Skipping search.")
         return []
     try:
-        tool = TavilySearchResults(max_results=max_results)
+        tool = TavilySearchResults(max_results=max_results, days=recency_days)
         results = tool.invoke({"query": query})
         out: List[dict] = []
         for r in results or []:
@@ -126,30 +140,35 @@ def scrape_full_webpage(url: str, max_words: int = 1500) -> str:
 def research_node(state: State) -> dict:
     _emit(_job(state), "research", "started", "Searching the web for evidence...")
     logger.info("🔍 DEEP RESEARCHING ---")
+
     queries = (state.get("queries") or [])[:5]
 
+    # ✅ FIX: Read recency_days from state so the date window router.py computed
+    # actually affects which results Tavily returns.
+    # - open_book  →  7 days   (breaking news, current events)
+    # - hybrid     →  45 days  (recent but not breaking)
+    # - closed_book → 3650 days (effectively no date filter)
+    recency_days = state.get("recency_days", _DEFAULT_RECENCY_DAYS)
+    logger.info(f"📅 Search recency window: {recency_days} days")
+
     found_urls = set()
-
-    # ✅ FIX #8: Track fingerprints of accepted snippets for near-duplicate detection.
-    # Previously only exact URL matches were deduplicated. Syndicated articles
-    # (same content, different URLs) all passed through, sending the LLM
-    # the same information multiple times and wasting tokens.
     seen_fingerprints: List[set] = []
-
     raw_results = []
     duplicates_skipped = 0
 
     for q in queries:
         logger.info(f"Searching: {q}")
         _emit(_job(state), "research", "working", f"Searching: {q}")
-        results = _tavily_search(q, max_results=3)
+
+        # ✅ FIX: Pass recency_days into every search call.
+        results = _tavily_search(q, max_results=3, recency_days=recency_days)
 
         for r in results:
             # Gate 1: exact URL deduplication (unchanged)
             if r['url'] in found_urls:
                 continue
 
-            # Gate 2: near-duplicate snippet detection (new)
+            # Gate 2: near-duplicate snippet detection
             snippet = r.get("snippet", "")
             if _is_near_duplicate(snippet, seen_fingerprints):
                 logger.info(f"   ⏭️ Skipping near-duplicate: {r['url']}")

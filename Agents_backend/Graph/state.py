@@ -35,14 +35,27 @@ class Task(BaseModel):
     target_words: int = Field(default=350, description="Approx word count (default 350)")
     tags: List[str] = Field(description="SEO tags for this section", default=[])
 
+    # ✅ FIX: Evidence distribution.
+    # The orchestrator assigns a slice of the evidence list to each task
+    # after plan generation (see orchestrator.py → _assign_evidence_to_tasks).
+    # fanout() in workers.py reads these indices and sends only the assigned
+    # slice to each worker, preventing all workers from pulling the same
+    # stats and repeating them across every section.
+    # Default is empty list — if no assignment was made, workers fall back
+    # to the full evidence list (safe backward-compatible default).
+    assigned_evidence_indices: List[int] = Field(
+        default=[],
+        description="Indices into the global evidence list assigned to this section"
+    )
+
 class Plan(BaseModel):
     """Schema for the entire blog outline."""
     blog_title: str = Field(description="SEO-optimized H1 title")
     tone: str = Field(description="Tone of voice (e.g., 'professional', 'conversational')")
     audience: str = Field(description="Target audience")
     tasks: List[Task] = Field(description="List of sections to write")
-    
-    # NEW: Keyword optimization fields
+
+    # Keyword optimization fields
     primary_keywords: List[str] = Field(
         description="Main SEO keywords to optimize for",
         default=[]
@@ -64,6 +77,7 @@ class GlobalImagePlan(BaseModel):
     """Schema for the image placement strategy."""
     images: List[ImageSpec] = Field(description="List of images to generate")
 
+
 # ============================================================================
 # 2. GRAPH STATE (THE MEMORY)
 # ============================================================================
@@ -73,7 +87,7 @@ class State(TypedDict, total=False):
     The central memory state of the graph.
     'total=False' allows keys to be missing during initialization.
     """
-    
+
     # --- Internal ---
     _job_id: str        # For real-time event emission
 
@@ -81,7 +95,6 @@ class State(TypedDict, total=False):
     topic: str
     as_of: str          # Date string
     blog_folder: str    # Path to save outputs
-    # NEW: Tone and keyword inputs
     target_tone: Optional[str]        # e.g., "professional", "conversational"
     target_keywords: List[str]        # e.g., ["AI healthcare", "medical automation"]
     target_sections: int              # How many body sections to generate
@@ -100,26 +113,39 @@ class State(TypedDict, total=False):
 
     # --- Worker Outputs (Parallel) ---
     # CRITICAL: Annotated[..., operator.add] enables the "Fan-Out" pattern.
-    # It tells LangGraph: "When multiple nodes return 'sections', append them 
+    # It tells LangGraph: "When multiple nodes return 'sections', append them
     # to this list instead of overwriting."
     sections: Annotated[List[tuple], operator.add]
 
     # --- Reducer/Merger Outputs ---
     merged_md: str            # Text combined from sections
     md_with_placeholders: str # Text with [[IMAGE_1]] tags
-    
+
     # Note: We store dicts here because we use .model_dump() in nodes.py
-    image_specs: List[dict]   
+    image_specs: List[dict]
 
     # --- Final Outputs ---
     final: str                # The finished Markdown blog post
-    
+
+    # --- Completion Validator ---
+    completion_report: str
+    completion_score: int
+    completion_issues: List[dict]
+
     # --- Quality Assurance (QA) ---
     qa_report: str            # The text report from the QA Agent
     qa_verdict: str           # "READY" or "NEEDS_REVISION"
     qa_issues: List[dict]     # Structured list of flagged issues
-    qa_score: float             # 0-10 overall score
-    
+    qa_score: float           # 0-10 overall score
+
+    # --- Blog Evaluator ---
+    blog_evaluator_report: str   # Human-readable report with scores and feedback
+    blog_evaluator_score: float  # 0-10 final score (average of 4 dimensions)
+
+    # --- Keyword Optimization ---
+    keyword_analysis: dict      # Detailed keyword metrics
+    keyword_report: str         # Human-readable report
+
     # --- Campaign Outputs ---
     linkedin_post: str
     youtube_script: str
@@ -129,15 +155,11 @@ class State(TypedDict, total=False):
     landing_page: str
 
     # --- Video & Audio Outputs ---
-    video_path: Optional[str]   # Path to the finalized MP4 video with stock footage
-    podcast_audio_path: Optional[str] # Path to the generated Gemini podcast audio
-    
-    # --- Keyword Optimization ---
-    keyword_analysis: dict      # Detailed keyword metrics
-    keyword_report: str         # Human-readable report
-    
+    video_path: Optional[str]          # Path to the finalized MP4 video
+    podcast_audio_path: Optional[str]  # Path to the generated Gemini podcast audio
+
     # --- Cost Saving Flags ---
-    generate_images: bool       # Whether to run DALL-E (or Gemini)
-    generate_campaign: bool     # Whether to run multi-agent social campaign
-    generate_video: bool        # Whether to generate stock video (Pexels)
-    generate_podcast: bool      # Whether to generate AI Podcast via Gemini
+    generate_images: bool
+    generate_campaign: bool
+    generate_video: bool
+    generate_podcast: bool
