@@ -128,7 +128,7 @@ def fetch_pexels_video(query: str, download_dir: str, index: int) -> Optional[st
 
 
 # ======================================================================
-# VOICEOVER & CAPTION HELPERS
+# VOICEOVER HELPERS
 # ======================================================================
 
 def save_pcm_as_wav(pcm_bytes: bytes, output_path: str):
@@ -214,112 +214,6 @@ def generate_tts_voiceover(text: str, voice: str = "Puck") -> Optional[str]:
     return None
 
 
-def download_vosk_model(model_path="vosk-model-small-en-us-0.15"):
-    """Downloads the lightweight Vosk model if it doesn't exist."""
-    import urllib.request
-    import zipfile
-
-    if not os.path.exists(model_path):
-        url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-        zip_path = "vosk_model.zip"
-        urllib.request.urlretrieve(url, zip_path)
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(".")
-        os.remove(zip_path)
-    return model_path
-
-
-def generate_transcription_timestamps(audio_path: str):
-    """Uses Local Vosk to get word-level timestamps (100% Free)."""
-    import json
-    from vosk import Model, KaldiRecognizer
-
-    try:
-        model_dir = download_vosk_model()
-        model = Model(model_dir)
-        wf = wave.open(audio_path, "rb")
-
-        if wf.getnchannels() != 1:
-            logger.warning("Audio must be Mono for Vosk.")
-            return []
-
-        rec = KaldiRecognizer(model, wf.getframerate())
-        rec.SetWords(True)
-
-        results = []
-        while True:
-            data = wf.readframes(4000)
-            if len(data) == 0:
-                break
-            if rec.AcceptWaveform(data):
-                res = json.loads(rec.Result())
-                if 'result' in res:
-                    results.extend(res['result'])
-
-        res = json.loads(rec.FinalResult())
-        if 'result' in res:
-            results.extend(res['result'])
-
-        chunks = []
-        current_chunk = []
-        for w in results:
-            current_chunk.append(w)
-            if len(current_chunk) >= 3:
-                text = " ".join([c['word'].strip() for c in current_chunk]).upper()
-                start = current_chunk[0]['start']
-                end = current_chunk[-1]['end']
-                chunks.append({'text': text, 'start': start, 'end': end})
-                current_chunk = []
-
-        if current_chunk:
-            text = " ".join([c['word'].strip() for c in current_chunk]).upper()
-            start = current_chunk[0]['start']
-            end = current_chunk[-1]['end']
-            chunks.append({'text': text, 'start': start, 'end': end})
-
-        return chunks
-    except Exception as e:
-        logger.error(f"Local Transcription failed: {e}")
-        return []
-
-
-def create_caption_clip(text: str, start: float, end: float, video_size: tuple):
-    """Creates a transparent ImageClip with styled text (stroke + color)."""
-    from moviepy import ImageClip
-    w, h = video_size
-    img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    try:
-        font = ImageFont.truetype("arialbd.ttf", 90)
-    except IOError:
-        font = ImageFont.load_default()
-
-    try:
-        bbox = d.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-    except AttributeError:
-        tw, th = d.textsize(text, font=font)
-
-    x = (w - tw) / 2
-    y = h * 0.75
-
-    stroke_color = (0, 0, 0, 255)
-    stroke_width = 5
-    for dx in range(-stroke_width, stroke_width + 1, 2):
-        for dy in range(-stroke_width, stroke_width + 1, 2):
-            d.text((x + dx, y + dy), text, font=font, fill=stroke_color)
-
-    main_color = (255, 235, 59, 255)  # Yellow
-    d.text((x, y), text, font=font, fill=main_color)
-
-    img_path = tempfile.mktemp(suffix=".png")
-    img.save(img_path)
-
-    clip = ImageClip(img_path).with_start(start).with_end(end)
-    return clip, img_path
-
 
 # ======================================================================
 # MAIN VIDEO GENERATOR NODE
@@ -327,7 +221,7 @@ def create_caption_clip(text: str, start: float, end: float, video_size: tuple):
 
 def video_generator_node(state: State) -> dict:
     """Generates a stock video short by writing a voiceover script, generating TTS,
-    fetching Pexels clips, and merging them with dynamic captions."""
+    fetching Pexels clips, and merging them with audio."""
     from langchain_openai import ChatOpenAI
 
     _emit(_job(state), "video", "started", "Structuring voiceover script for Short...")
@@ -382,10 +276,6 @@ def video_generator_node(state: State) -> dict:
         logger.error(f"Failed to load audio: {e}")
         return {"video_path": None}
 
-    # 4. Generate captions
-    _emit(_job(state), "video", "working", "Transcribing audio for captions (Vosk)...")
-    caption_chunks = generate_transcription_timestamps(audio_path)
-
     # 5. Plan video scenes
     _emit(_job(state), "video", "working", "Planning stock video background...")
     planner = llm.with_structured_output(VideoScenePlan)
@@ -420,7 +310,7 @@ def video_generator_node(state: State) -> dict:
         return {"video_path": None}
 
     # 7. Stitch with moviepy
-    _emit(_job(state), "video", "working", "Stitching footage and overlaying audio & captions...")
+    _emit(_job(state), "video", "working", "Stitching footage and overlaying audio...")
     logger.info("   ✂️ Editing video with moviepy...")
 
     try:
@@ -455,20 +345,7 @@ def video_generator_node(state: State) -> dict:
         else:
             final_video = final_video.subclipped(0, audio_duration)
 
-        generated_pngs = []
-        if caption_chunks:
-            logger.info("   ✍️ Applying dynamic captions to video...")
-            video_size    = final_video.size
-            caption_clips = []
 
-            for chunk in caption_chunks:
-                cap_clip, png_path = create_caption_clip(
-                    chunk['text'], chunk['start'], chunk['end'] + 0.1, video_size
-                )
-                caption_clips.append(cap_clip)
-                generated_pngs.append(png_path)
-
-            final_video = CompositeVideoClip([final_video] + caption_clips)
 
         final_video = final_video.with_audio(audio_clip)
 
@@ -488,12 +365,6 @@ def video_generator_node(state: State) -> dict:
             clip.close()
         audio_clip.close()
         final_video.close()
-
-        for png in generated_pngs:
-            try:
-                os.remove(png)
-            except Exception:
-                pass
 
         try:
             os.remove(audio_path)
