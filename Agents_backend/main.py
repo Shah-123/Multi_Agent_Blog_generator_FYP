@@ -30,11 +30,13 @@ from Graph.nodes import (
     decide_images,
     generate_and_place_images,
     qa_agent_node,
+    revision_node,
     campaign_generator_node,
     video_generator_node,
     podcast_node,
     _safe_slug
 )
+from Graph.agents.revision import MAX_REVISIONS
 from Graph.keyword_optimizer import keyword_optimizer_node
 from Graph.completion_validator import validate_completion
 from validators import TopicValidator, blog_evaluator_node
@@ -96,9 +98,31 @@ def generate_readme(folders: dict, saved_files: dict, state: State) -> str:
     plan     = state.get("plan")
     audience = plan.audience if plan and hasattr(plan, "audience") else "General"
 
+    # ✅ FIX: Prepend a DRAFT banner when QA detected critical issues.
+    # Previously the blog was silently saved as complete even when qa_verdict
+    # was NEEDS_REVISION. Now the README opens with a loud, unmissable warning.
+    draft_banner = ""
+    if _qa_needs_review(state):
+        critical_issues = [
+            i for i in state.get("qa_issues", []) if i.get("severity") == "critical"
+        ]
+        issue_lines = "\n".join(
+            f"- **{i.get('issue_type', 'unknown').upper()}**: {i.get('claim', '')[:120]}"
+            for i in critical_issues
+        )
+        draft_banner = f"""## ⚠️ DRAFT — NOT READY TO PUBLISH
+
+> **QA detected {len(critical_issues)} critical issue(s). Review and fix before publishing.**
+
+{issue_lines}
+
+---
+
+"""
+
     md = f"""# {topic}
 
-## 📋 Blog Information
+{draft_banner}## 📋 Blog Information
 - **Topic**: {topic}
 - **Generated Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - **Target Audience**: {audience}
@@ -165,7 +189,26 @@ def save_blog_content(folders: dict, state: State) -> dict:
     # 1. Content
     if state.get("final"):
         path = f"{folders['content']}/{slug}.md"
-        Path(path).write_text(state["final"], encoding="utf-8")
+        blog_content = state["final"]
+
+        # ✅ FIX: Prepend a DRAFT banner to the actual blog file when QA
+        # detected critical issues, so the user sees it before publishing.
+        if _qa_needs_review(state):
+            critical_issues = [
+                i for i in state.get("qa_issues", []) if i.get("severity") == "critical"
+            ]
+            issue_lines = "\n".join(
+                f"> - **{i.get('issue_type','unknown').upper()}**: {i.get('claim','')[:120]}"
+                for i in critical_issues
+            )
+            draft_header = (
+                f"> ## ⚠️ DRAFT — NOT READY TO PUBLISH\n"
+                f"> QA flagged {len(critical_issues)} critical issue(s):\n"
+                f"{issue_lines}\n\n---\n\n"
+            )
+            blog_content = draft_header + blog_content
+
+        Path(path).write_text(blog_content, encoding="utf-8")
         saved["blog"] = path
         print(f"   ✅ Saved blog: {os.path.basename(path)}")
 
@@ -272,37 +315,40 @@ def save_blog_content(folders: dict, state: State) -> dict:
 
 def _after_qa(state: State) -> str:
     """
-    ✅ FIX: Act on the QA verdict instead of always proceeding silently.
+    ✅ Automated Revision Loop: routes to revision_node when QA detects critical
+    issues AND the revision limit hasn't been reached. Otherwise proceeds to
+    keyword_optimizer.
 
-    Previously qa_verdict was stored in state but the graph always moved to
-    keyword_optimizer regardless of the result. A NEEDS_REVISION verdict with
-    critical issues (hallucinated stats, invented case studies) was effectively
-    ignored — the blog was saved and presented as complete.
-
-    Now:
-    - NEEDS_REVISION with critical issues → logs a loud WARNING listing each
-      flagged issue so the user knows the blog needs review before publishing.
-    - READY or minor issues only → proceeds normally, no interruption.
-
-    A full automated revision loop (re-running writers on flagged sections)
-    is the ideal next step but is expensive. This gives you visibility now
-    without adding latency to every run.
+    Flow:
+        qa_agent → _after_qa
+            ├─ critical issues AND revision_count < MAX_REVISIONS → revision_node → qa_agent (loop)
+            └─ READY or max revisions reached → keyword_optimizer
     """
     verdict = state.get("qa_verdict", "READY")
     issues  = state.get("qa_issues", [])
+    revision_count = state.get("revision_count", 0)
 
     if verdict == "NEEDS_REVISION":
         critical = [i for i in issues if i.get("severity") == "critical"]
 
+        if critical and revision_count < MAX_REVISIONS:
+            logger.info(
+                f"🔄 Routing to revision loop "
+                f"({revision_count + 1}/{MAX_REVISIONS}) — "
+                f"{len(critical)} critical issue(s) to fix."
+            )
+            return "revision"
+
         if critical:
+            # Max revisions reached but still has critical issues
             logger.warning("=" * 60)
             logger.warning(
                 f"⚠️  QA VERDICT: NEEDS_REVISION — "
-                f"{len(critical)} CRITICAL issue(s) detected."
+                f"{len(critical)} CRITICAL issue(s) remain after "
+                f"{revision_count} revision(s)."
             )
             logger.warning(
-                "   The blog has been saved but should be reviewed "
-                "before publishing."
+                "   Output is marked as DRAFT. Review before publishing."
             )
             for i, issue in enumerate(critical, 1):
                 logger.warning(
@@ -314,13 +360,20 @@ def _after_qa(state: State) -> str:
                 )
             logger.warning("=" * 60)
         else:
-            # Minor issues only — log briefly and continue
             logger.warning(
                 f"⚠️  QA verdict: NEEDS_REVISION ({len(issues)} minor issue(s)). "
                 f"Review recommended but not blocking."
             )
 
     return "keyword_optimizer"
+
+
+def _qa_needs_review(state: State) -> bool:
+    """Returns True if QA detected critical issues that require human review."""
+    if state.get("qa_verdict", "READY") != "NEEDS_REVISION":
+        return False
+    issues = state.get("qa_issues", [])
+    return any(i.get("severity") == "critical" for i in issues)
 
 
 def build_graph(memory=None):
@@ -353,6 +406,7 @@ def build_graph(memory=None):
     workflow.add_node("reducer",              reducer.compile())
     workflow.add_node("completion_validator", validate_completion)
     workflow.add_node("qa_agent",             qa_agent_node)
+    workflow.add_node("revision",              revision_node)
     workflow.add_node("keyword_optimizer",    keyword_optimizer_node)
     workflow.add_node("blog_evaluator",       blog_evaluator_node)
     workflow.add_node("campaign_generator",   campaign_generator_node)
@@ -373,13 +427,16 @@ def build_graph(memory=None):
     workflow.add_edge("reducer",              "completion_validator")
     workflow.add_edge("completion_validator", "qa_agent")
 
-    # ✅ FIX: qa_agent → _after_qa (logs critical issues) → keyword_optimizer
-    # Previously this was a plain edge that silently ignored the verdict.
+    # ✅ Automated Revision Loop:
+    # qa_agent → _after_qa routes to either:
+    #   - "revision" (critical issues + under max) → loops back to qa_agent
+    #   - "keyword_optimizer" (READY or max revisions reached)
     workflow.add_conditional_edges(
         "qa_agent",
         _after_qa,
-        ["keyword_optimizer"]
+        ["revision", "keyword_optimizer"]
     )
+    workflow.add_edge("revision", "qa_agent")  # ← the feedback loop
 
     workflow.add_edge("keyword_optimizer", "blog_evaluator")
 
@@ -476,7 +533,10 @@ def run_app():
 
     # 7. Graph
     app    = build_graph()
-    thread = {"configurable": {"thread_id": f"job_{datetime.now().strftime('%M%S')}"}}
+    # ✅ FIX: uuid4 instead of "%M%S" — two runs within the same minute
+    # previously got the same thread_id, corrupting each other's checkpointer state.
+    import uuid
+    thread = {"configurable": {"thread_id": f"job_{uuid.uuid4().hex[:12]}"}}
 
     initial_state = {
         "topic":             topic,
@@ -537,7 +597,16 @@ def run_app():
     readme      = generate_readme(folders, saved_files, final_state)
 
     print("\n" + "=" * 80)
-    print("✨ GENERATION COMPLETE ✨")
+
+    # ✅ FIX: Show DRAFT status prominently in terminal when QA flags critical issues.
+    # Previously always printed "✨ GENERATION COMPLETE" even for blogs with
+    # hallucinated or unverified claims.
+    if _qa_needs_review(final_state):
+        print("⚠️  GENERATION COMPLETE — DRAFT (NOT READY TO PUBLISH)")
+        print("   QA detected critical issues. Review the blog before sharing.")
+    else:
+        print("✨ GENERATION COMPLETE ✨")
+
     print(f"📂 Output Folder: {folders['base']}")
     print(f"📖 Read Summary:  {readme}")
 
@@ -557,6 +626,15 @@ def run_app():
         print(final_state["blog_evaluator_report"])
 
     print("=" * 80)
+    
+    # Emit completion event for API/Frontend to know where files are saved
+    try:
+        from event_bus import events
+        events.emit_sync(job_id, "system", "completed", "Generation finished successfully.", {
+            "blog_folder": folders['base']
+        })
+    except Exception as e:
+        print(f"Failed to emit completion event: {e}")
 
 
 if __name__ == "__main__":

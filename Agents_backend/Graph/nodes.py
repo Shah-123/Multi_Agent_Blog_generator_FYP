@@ -9,6 +9,7 @@ from .agents import (
     decide_images, 
     generate_and_place_images,
     qa_agent_node,
+    revision_node,
     campaign_generator_node,
     video_generator_node
 )
@@ -25,6 +26,7 @@ __all__ = [
     "decide_images",
     "generate_and_place_images",
     "qa_agent_node",
+    "revision_node",
     "campaign_generator_node",
     "video_generator_node",
     "podcast_node",

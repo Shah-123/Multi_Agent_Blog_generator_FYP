@@ -1,10 +1,24 @@
 """
 Keyword Optimization Module
 Analyzes and optimizes keyword usage in blog content.
+
+✅ FIX: The optimizer now ACTIVELY rewrites underperforming sections to inject
+low-density keywords, rather than just generating a text report that is thrown away.
+The rewrite is surgical — only the paragraph(s) with the lowest keyword presence
+are touched, and the rewrite is explicitly instructed not to change other content.
 """
 
 import re
+import os
+import logging
 from typing import Dict, List
+
+logger = logging.getLogger("blog_pipeline")
+
+
+# ============================================================================
+# ANALYSIS HELPERS (unchanged)
+# ============================================================================
 
 def analyze_keyword_density(text: str, keywords: List[str]) -> Dict:
     """
@@ -97,14 +111,86 @@ def generate_optimization_suggestions(analysis: Dict) -> List[str]:
     return suggestions
 
 
+# ============================================================================
+# ✅ NEW: ACTIVE KEYWORD INJECTOR
+# ============================================================================
+
+def _inject_missing_keywords(blog_text: str, low_keywords: List[str]) -> str:
+    """
+    Uses an LLM to naturally weave missing keywords into the blog content.
+
+    Only called when one or more keywords have 'low' density (<1%).
+    The prompt is surgical: it identifies the most relevant existing paragraph
+    for each keyword and rewrites only that paragraph to include the keyword
+    naturally. All other content is preserved verbatim.
+
+    Returns the updated blog text, or the original text if the LLM call fails.
+    """
+    if not low_keywords:
+        return blog_text
+
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+
+        keywords_list = "\n".join(f"  - {kw}" for kw in low_keywords)
+
+        system_prompt = """You are an SEO editor. Your task is to naturally integrate missing keywords 
+into a blog post WITHOUT changing the meaning, tone, facts, or overall structure.
+
+RULES:
+1. For each missing keyword, find the most relevant existing paragraph and rewrite ONLY that 
+   paragraph to include the keyword naturally (1-2 times max).
+2. Do NOT add new sections, headings, bullet points, or paragraphs.
+3. Do NOT change any other part of the blog.
+4. The keyword must read naturally — do not force it awkwardly.
+5. Return the COMPLETE blog post with your targeted edits applied.
+6. Maintain the exact same Markdown formatting (##, **, [], etc.)."""
+
+        human_message = (
+            f"KEYWORDS TO INJECT (currently appearing too rarely):\n{keywords_list}\n\n"
+            f"BLOG POST TO UPDATE:\n{blog_text}"
+        )
+
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=human_message)
+        ])
+
+        updated = response.content.strip()
+
+        # Safety check: make sure we got back a real blog (not an empty response)
+        if len(updated) > len(blog_text) * 0.7:
+            logger.info(f"   ✅ Keywords injected: {low_keywords}")
+            return updated
+        else:
+            logger.warning("   ⚠️ Injection response too short — keeping original content.")
+            return blog_text
+
+    except Exception as e:
+        logger.warning(f"   ⚠️ Keyword injection failed (non-fatal): {e}. Keeping original.")
+        return blog_text
+
+
+# ============================================================================
+# MAIN NODE
+# ============================================================================
+
 def keyword_optimizer_node(state: dict) -> dict:
     """
     Analyzes and optimizes keyword usage in the final blog.
     
-    This node:
-    1. Analyzes keyword density and placement
-    2. Generates optimization suggestions
-    3. Creates a comprehensive keyword report
+    ✅ FIX: This node now ACTIVELY rewrites the blog to inject low-density
+    keywords rather than just generating a passive report. The injection step
+    uses gpt-4o-mini with a surgical prompt to avoid changing unrelated content.
+
+    Steps:
+    1. Analyze keyword density and placement
+    2. For keywords with 'low' status: inject them into the blog via LLM rewrite
+    3. Re-analyze after injection to confirm improvement
+    4. Generate a comprehensive report reflecting the final state
     """
     
     print("--- 🎯 OPTIMIZING KEYWORDS ---")
@@ -121,21 +207,33 @@ def keyword_optimizer_node(state: dict) -> dict:
         print("   ⚠️ No content to analyze yet.")
         return {}
     
-    # Analyze current keyword usage
+    # --- Step 1: Initial analysis ---
     analysis = analyze_keyword_density(final_text, target_keywords)
+    low_keywords = [kw for kw, stats in analysis.items() if stats["status"] == "low"]
+
+    # --- Step 2: Active injection for low-density keywords ---
+    updated_text = final_text
+    injected = False
+    if low_keywords:
+        print(f"   🔧 Injecting {len(low_keywords)} underperforming keyword(s): {low_keywords}")
+        updated_text = _inject_missing_keywords(final_text, low_keywords)
+        injected = updated_text != final_text
+
+        if injected:
+            # Re-analyze after injection so the report reflects the actual final state
+            analysis = analyze_keyword_density(updated_text, target_keywords)
     
-    # Generate optimization suggestions
+    # --- Step 3: Build report ---
     suggestions = generate_optimization_suggestions(analysis)
     
-    # Create comprehensive report
     report = "KEYWORD OPTIMIZATION REPORT\n"
     report += "=" * 60 + "\n\n"
     
-    # Overall summary
     optimal_count = sum(1 for stats in analysis.values() if stats["status"] == "optimal")
+    if injected:
+        report += f"✅ Active keyword injection applied for: {', '.join(low_keywords)}\n\n"
     report += f"📊 SUMMARY: {optimal_count}/{len(target_keywords)} keywords are optimally integrated\n\n"
     
-    # Detailed breakdown for each keyword
     for keyword, stats in analysis.items():
         status_emoji = "✅" if stats["status"] == "optimal" else "⚠️" if stats["status"] == "low" else "❌"
         
@@ -147,9 +245,8 @@ def keyword_optimizer_node(state: dict) -> dict:
         report += f"   In Headings: {'✓' if stats['in_headings'] else '✗'}\n"
         report += f"   Status: {stats['status'].upper()}\n\n"
     
-    # Add suggestions section
     if suggestions:
-        report += "💡 OPTIMIZATION SUGGESTIONS\n"
+        report += "💡 REMAINING SUGGESTIONS\n"
         report += "-" * 60 + "\n"
         report += "\n".join(suggestions)
         report += "\n"
@@ -157,14 +254,19 @@ def keyword_optimizer_node(state: dict) -> dict:
         report += "✅ EXCELLENT! All keywords are optimally integrated.\n"
         report += "No further optimization needed.\n"
     
-    # Print summary to console
     print(f"   📊 Analyzed {len(target_keywords)} keywords")
     print(f"   ✅ {optimal_count} optimal, ⚠️ {len(target_keywords) - optimal_count} need attention")
     
-    return {
+    result = {
         "keyword_analysis": analysis,
-        "keyword_report": report
+        "keyword_report":   report,
     }
+
+    # ✅ Only update state["final"] if the blog was actually changed
+    if injected:
+        result["final"] = updated_text
+
+    return result
 
 
 def get_keyword_summary(analysis: Dict) -> str:

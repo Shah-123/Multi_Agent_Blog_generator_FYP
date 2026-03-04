@@ -135,7 +135,10 @@ DO NOT GIVE PERFECT SCORES easily. Be highly critical.
 - SEO & Links: Does it cite its sources well using [Link](url)?
 Return the scores as exact floats (e.g., 7.5, 8.0, 9.2)."""
 
-        human_message = f"TOPIC: {topic}\n\nBLOG CONTENT:\n{blog_post[:15000]}"
+        # ✅ FIX: Raised from 15,000 → 30,000 chars to match the QA agent audit limit.
+        # A 3,000-word blog is ~18,000 chars — the old 15k limit meant the last
+        # ~700 words were never evaluated for depth, structure, or readability.
+        human_message = f"TOPIC: {topic}\n\nBLOG CONTENT:\n{blog_post[:30000]}"
 
         try:
             result: BlogFeedback = evaluator.invoke([

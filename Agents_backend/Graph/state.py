@@ -138,6 +138,9 @@ class State(TypedDict, total=False):
     qa_issues: List[dict]     # Structured list of flagged issues
     qa_score: float           # 0-10 overall score
 
+    # --- Revision Loop ---
+    revision_count: int       # How many QA → revision loops have run (starts 0, max 2)
+
     # --- Blog Evaluator ---
     blog_evaluator_report: str   # Human-readable report with scores and feedback
     blog_evaluator_score: float  # 0-10 final score (average of 4 dimensions)
