@@ -235,10 +235,27 @@ def video_generator_node(state: State) -> dict:
         _emit(_job(state), "video", "error", "Skipped: Requires generated blog content.")
         return {"video_path": None}
 
-    video_dir = Path("generated_videos")
-    video_dir.mkdir(exist_ok=True)
+    # ✅ FIX: Write video directly into the blog's structured output folder.
+    # Previously this hardcoded "generated_videos/" and then shutil.copy'd to the blog
+    # folder — accumulating files in generated_videos/ across every run with no cleanup.
+    # Now uses state["blog_folder"]/video/ if available; falls back to generated_videos/
+    # only when blog_folder is absent (e.g., standalone testing).
+    blog_folder = state.get("blog_folder")
+    if blog_folder:
+        video_dir = Path(blog_folder) / "video"
+    else:
+        video_dir = Path("generated_videos")
+    video_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     temp_dir  = tempfile.mkdtemp()
+
+    def _cleanup_temp():
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            logger.info("   🧹 Cleaned up temporary video files.")
+        except Exception:
+            pass
 
     # 1. Build structured brief from full blog
     _emit(_job(state), "video", "working", "Summarizing full blog for voiceover brief...")
@@ -266,6 +283,7 @@ def video_generator_node(state: State) -> dict:
     if not audio_path:
         logger.error("Audio generation failed after all retries.")
         _emit(_job(state), "video", "error", "Audio generation failed after retries.")
+        _cleanup_temp()
         return {"video_path": None}
 
     try:
@@ -274,6 +292,7 @@ def video_generator_node(state: State) -> dict:
         audio_duration = audio_clip.duration
     except Exception as e:
         logger.error(f"Failed to load audio: {e}")
+        _cleanup_temp()
         return {"video_path": None}
 
     # 5. Plan video scenes
@@ -307,6 +326,7 @@ def video_generator_node(state: State) -> dict:
     if not downloaded_clips:
         logger.error("Failed to download any stock videos. Skipping.")
         _emit(_job(state), "video", "error", "Failed to fetch stock footage.")
+        _cleanup_temp()
         return {"video_path": None}
 
     # 7. Stitch with moviepy
@@ -319,6 +339,7 @@ def video_generator_node(state: State) -> dict:
     except ImportError:
         logger.error("moviepy not installed. Skipping video generation.")
         _emit(_job(state), "video", "error", "Missing moviepy dependency.")
+        _cleanup_temp()
         return {"video_path": None}
 
     try:
@@ -349,7 +370,7 @@ def video_generator_node(state: State) -> dict:
 
         final_video = final_video.with_audio(audio_clip)
 
-        output_file = str(video_dir / f"short_{timestamp}.mp4")
+        output_file = str(video_dir / "short.mp4")
         logger.info(f"   🎬 Exporting to {output_file}...")
 
         final_video.write_videofile(
@@ -373,9 +394,11 @@ def video_generator_node(state: State) -> dict:
 
         logger.info("   ✅ Video Generation Complete!")
         _emit(_job(state), "video", "completed", "Stock video generated successfully.")
+        _cleanup_temp()
         return {"video_path": output_file}
 
     except Exception as e:
         logger.error(f"Video editing failed: {e}")
         _emit(_job(state), "video", "error", f"Video edit failed: {e}")
+        _cleanup_temp()
         return {"video_path": None}
