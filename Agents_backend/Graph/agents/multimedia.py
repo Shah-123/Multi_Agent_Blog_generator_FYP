@@ -92,16 +92,35 @@ def generate_and_place_images(state: State) -> dict:
                     
                     best_match_idx = -1
                     best_score = 0
-                    
+
                     for i, p in enumerate(paragraphs):
                         p_words = set(p.lower().split())
                         overlap = len(target_words.intersection(p_words))
                         if overlap > best_score:
                             best_score = overlap
                             best_match_idx = i
-                    
+
                     if best_match_idx >= 0 and best_score >= min(3, len(target_words) // 3):
-                        paragraphs.insert(best_match_idx + 1, markdown_image.strip())
+                        # Check if the paragraph immediately after the best match is a mermaid block.
+                        # If so, REPLACE it with the AI image to avoid duplication.
+                        next_idx = best_match_idx + 1
+                        if (next_idx < len(paragraphs) and
+                                paragraphs[next_idx].strip().startswith("```mermaid")):
+                            paragraphs[next_idx] = markdown_image.strip()
+                        else:
+                            paragraphs.insert(next_idx, markdown_image.strip())
+
+                        # Strip orphaned "consider the following diagram/flowchart" sentences
+                        # from the matched paragraph to keep the prose clean.
+                        cleaned = re.sub(
+                            r'[^.!?]*\bconsider the following (diagram|flowchart|chart|figure)\b[^.!?]*[.!?]?\s*',
+                            '',
+                            paragraphs[best_match_idx],
+                            flags=re.IGNORECASE,
+                        ).strip()
+                        if cleaned:
+                            paragraphs[best_match_idx] = cleaned
+
                         final_md = "\n\n".join(paragraphs)
                     else:
                         logger.warning(f"Could not find target paragraph similar to '{target_phrase}', appending to end.")
