@@ -470,15 +470,50 @@ def build_graph(memory=None):
 # 3. MAIN RUNNER
 # ===========================================================================
 
-def run_app():
+def run_app(
+    topic: str = None,
+    tone: str = None,
+    sections: int = None,
+    human_in_loop: bool = False,
+    include_video: bool = False,
+    include_podcast: bool = False,
+    include_campaign: bool = False,
+    job_id: str = None,
+):
+    """
+    Main entry point for both CLI and API execution.
+
+    When called from the CLI (no arguments), uses interactive prompts.
+    When called from the API (arguments provided), skips prompts entirely
+    so the Streamlit dashboard can drive generation programmatically.
+
+    Parameters
+    ----------
+    topic          : Blog topic string (API mode) or None (CLI prompts user).
+    tone           : Tone string e.g. "professional" (API) or None (CLI picks).
+    sections       : Number of body sections (API) or None (CLI picks).
+    human_in_loop  : If True, halt at plan stage for HITL review (API flag).
+    include_video  : Enable video generation.
+    include_podcast: Enable podcast generation.
+    include_campaign: Enable social media campaign generation.
+    job_id         : Job UUID supplied by the API for event bus tracking.
+    """
+    # -----------------------------------------------------------------------
+    # Determine execution mode
+    # -----------------------------------------------------------------------
+    api_mode = topic is not None  # API supplied a topic → skip all prompts
+
     print("=" * 80)
     print("🚀 AI CONTENT FACTORY (FYP EDITION)")
     print("=" * 80)
 
-    # 1. Input & Validation
-    topic = input("\n📝 Enter blog topic: ").strip()
-    if not topic:
-        return
+    # -----------------------------------------------------------------------
+    # 1. Topic input & validation
+    # -----------------------------------------------------------------------
+    if not api_mode:
+        topic = input("\n📝 Enter blog topic: ").strip()
+        if not topic:
+            return
 
     valid = TopicValidator().validate(topic)
     if not valid["valid"]:
@@ -487,56 +522,81 @@ def run_app():
 
     print(f"✅ Topic Accepted: {topic}")
 
-    # 2. Tone
-    print("\n🎨 Select Tone:")
-    print("1. Professional (formal, data-driven)")
-    print("2. Conversational (friendly, relatable)")
-    print("3. Technical (precise, expert-level)")
-    print("4. Educational (teaching-focused)")
-    print("5. Persuasive (compelling, action-driven)")
-    print("6. Inspirational (motivating, aspirational)")
-
+    # -----------------------------------------------------------------------
+    # 2. Tone selection
+    # -----------------------------------------------------------------------
     tone_map = {
         "1": "professional", "2": "conversational",
         "3": "technical",    "4": "educational",
         "5": "persuasive",   "6": "inspirational"
     }
-    tone_choice  = input("Choose (1-6) [default: 1]: ").strip() or "1"
-    target_tone  = tone_map.get(tone_choice, "professional")
 
+    if not api_mode:
+        print("\n🎨 Select Tone:")
+        print("1. Professional (formal, data-driven)")
+        print("2. Conversational (friendly, relatable)")
+        print("3. Technical (precise, expert-level)")
+        print("4. Educational (teaching-focused)")
+        print("5. Persuasive (compelling, action-driven)")
+        print("6. Inspirational (motivating, aspirational)")
+        tone_choice = input("Choose (1-6) [default: 1]: ").strip() or "1"
+        target_tone = tone_map.get(tone_choice, "professional")
+    else:
+        target_tone = tone or "professional"
+
+    # -----------------------------------------------------------------------
     # 3. Keywords
-    keywords_input  = input("\n🎯 Enter target keywords (comma-separated, or press Enter to skip): ").strip()
-    target_keywords = [k.strip() for k in keywords_input.split(",")] if keywords_input else []
+    # -----------------------------------------------------------------------
+    if not api_mode:
+        keywords_input = input("\n🎯 Enter target keywords (comma-separated, or press Enter to skip): ").strip()
+        target_keywords = [k.strip() for k in keywords_input.split(",")] if keywords_input else []
+    else:
+        target_keywords = []  # API doesn't expose keywords yet; can be extended
 
-    # 4. Cost-Saving Toggles
-    print("\n💰 Cost-Saving Options (Press Enter for Yes):")
-    generate_images   = input("Generate Images (Gemini)? [Y/n]: ").strip().lower() != "n"
-    generate_campaign = input("Generate Social Media Campaign? [Y/n]: ").strip().lower() != "n"
-    generate_video    = input("Generate Short Video (Voiceover + Captions + Pexels)? [Y/n]: ").strip().lower() != "n"
-    generate_podcast  = input("Generate Audio Podcast (Gemini)? [Y/n]: ").strip().lower() != "n"
+    # -----------------------------------------------------------------------
+    # 4. Feature toggles
+    # -----------------------------------------------------------------------
+    if not api_mode:
+        print("\n💰 Cost-Saving Options (Press Enter for Yes):")
+        generate_images   = input("Generate Images (Gemini)? [Y/n]: ").strip().lower() != "n"
+        generate_campaign = input("Generate Social Media Campaign? [Y/n]: ").strip().lower() != "n"
+        generate_video    = input("Generate Short Video (Voiceover + Captions + Pexels)? [Y/n]: ").strip().lower() != "n"
+        generate_podcast  = input("Generate Audio Podcast (Gemini)? [Y/n]: ").strip().lower() != "n"
+    else:
+        generate_images   = True  # always generate images in API mode
+        generate_campaign = include_campaign
+        generate_video    = include_video
+        generate_podcast  = include_podcast
 
-    # 5. Number of Sections
-    sections_input = input("\n📏 How many body sections? (1-10) [default: 5]: ").strip()
-    try:
-        target_sections = max(1, min(10, int(sections_input))) if sections_input else 5
-    except ValueError:
-        target_sections = 5
+    # -----------------------------------------------------------------------
+    # 5. Number of sections
+    # -----------------------------------------------------------------------
+    if not api_mode:
+        sections_input = input("\n📏 How many body sections? (1-10) [default: 5]: ").strip()
+        try:
+            target_sections = max(1, min(10, int(sections_input))) if sections_input else 5
+        except ValueError:
+            target_sections = 5
+    else:
+        target_sections = max(1, min(10, sections)) if sections else 5
 
     print(f"\n✅ Tone: {target_tone}")
     print(f"✅ Sections: {target_sections}")
     print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Video={'ON' if generate_video else 'OFF'} | Podcast={'ON' if generate_podcast else 'OFF'}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
 
-    # 6. Folders
+    # -----------------------------------------------------------------------
+    # 6. Output folder structure
+    # -----------------------------------------------------------------------
     folders = create_blog_structure(topic)
     print(f"📁 Working Directory: {folders['base']}")
 
-    # 7. Graph
+    # -----------------------------------------------------------------------
+    # 7. Build and configure the graph
+    # -----------------------------------------------------------------------
     app    = build_graph()
-    # ✅ FIX: uuid4 instead of "%M%S" — two runs within the same minute
-    # previously got the same thread_id, corrupting each other's checkpointer state.
-    import uuid
-    thread = {"configurable": {"thread_id": f"job_{uuid.uuid4().hex[:12]}"}}
+    import uuid as _uuid
+    thread = {"configurable": {"thread_id": f"job_{_uuid.uuid4().hex[:12]}"}}
 
     initial_state = {
         "topic":             topic,
@@ -550,14 +610,19 @@ def run_app():
         "generate_campaign": generate_campaign,
         "generate_video":    generate_video,
         "generate_podcast":  generate_podcast,
+        "_job_id":           job_id or "",
     }
 
+    # -----------------------------------------------------------------------
     # 8. Phase 1: Research & Planning
+    # -----------------------------------------------------------------------
     print("\n🚀 PHASE 1: RESEARCH & PLANNING")
     for _ in app.stream(initial_state, thread, stream_mode="values"):
         pass
 
-    # 9. Human-in-the-Loop Review
+    # -----------------------------------------------------------------------
+    # 9. Human-in-the-Loop review (CLI always prompts; API only if requested)
+    # -----------------------------------------------------------------------
     state = app.get_state(thread).values
     plan  = state.get("plan")
 
@@ -572,25 +637,33 @@ def run_app():
         keyword_tags = f" [{', '.join(t.tags[:2])}]" if t.tags else ""
         print(f"   {t.id + 1}. {t.title}{keyword_tags}")
 
-    while True:
-        feedback = input("\n✅ Approved? (y/n): ").lower()
-        if feedback == "y":
-            break
-        elif feedback == "n":
-            notes    = input("💬 Enter changes: ")
-            new_plan = refine_plan_with_llm(plan, notes)
-            app.update_state(thread, {"plan": new_plan})
-            plan = new_plan
-            print("\n✅ Plan Updated:")
-            for t in plan.tasks:
-                print(f"   - {t.title}")
+    if not api_mode or human_in_loop:
+        while True:
+            feedback = input("\n✅ Approved? (y/n): ").lower()
+            if feedback == "y":
+                break
+            elif feedback == "n":
+                notes    = input("💬 Enter changes: ")
+                new_plan = refine_plan_with_llm(plan, notes)
+                app.update_state(thread, {"plan": new_plan})
+                plan = new_plan
+                print("\n✅ Plan Updated:")
+                for t in plan.tasks:
+                    print(f"   - {t.title}")
+    else:
+        # API mode (no HITL): auto-approve the plan
+        print("\n⚡ API Mode: Auto-approving plan (human_in_loop=False)")
 
+    # -----------------------------------------------------------------------
     # 10. Phase 2: Execution
+    # -----------------------------------------------------------------------
     print("\n🚀 PHASE 2: WRITING & PRODUCTION")
     for _ in app.stream(None, thread, stream_mode="values", recursion_limit=150):
         pass
 
-    # 11. Save
+    # -----------------------------------------------------------------------
+    # 11. Save outputs
+    # -----------------------------------------------------------------------
     final_state = app.get_state(thread).values
     print("\n💾 SAVING ASSETS...")
     saved_files = save_blog_content(folders, final_state)
@@ -598,9 +671,6 @@ def run_app():
 
     print("\n" + "=" * 80)
 
-    # ✅ FIX: Show DRAFT status prominently in terminal when QA flags critical issues.
-    # Previously always printed "✨ GENERATION COMPLETE" even for blogs with
-    # hallucinated or unverified claims.
     if _qa_needs_review(final_state):
         print("⚠️  GENERATION COMPLETE — DRAFT (NOT READY TO PUBLISH)")
         print("   QA detected critical issues. Review the blog before sharing.")
@@ -626,15 +696,16 @@ def run_app():
         print(final_state["blog_evaluator_report"])
 
     print("=" * 80)
-    
-    # Emit completion event for API/Frontend to know where files are saved
-    try:
-        from event_bus import events
-        events.emit_sync(job_id, "system", "completed", "Generation finished successfully.", {
-            "blog_folder": folders['base']
-        })
-    except Exception as e:
-        print(f"Failed to emit completion event: {e}")
+
+    # Emit completion event for API/Frontend tracking
+    if job_id:
+        try:
+            from event_bus import events
+            events.emit_sync(job_id, "system", "completed", "Generation finished successfully.", {
+                "blog_folder": folders['base']
+            })
+        except Exception as e:
+            print(f"Failed to emit completion event: {e}")
 
 
 if __name__ == "__main__":
