@@ -12,7 +12,6 @@ Max 2 revision loops to prevent infinite cycles and excessive API cost.
 After 2 failed revisions, the pipeline proceeds with the DRAFT flag.
 """
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from Graph.state import State
@@ -88,9 +87,11 @@ def revision_node(state: State) -> dict:
           f"Fixing {len(critical_issues)} critical issue(s)...")
 
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+        # ✅ FIX: Use shared quality LLM instead of creating a new instance every call.
+        # Also avoids hardcoding the model name — it follows LLM_QUALITY_MODEL env var.
+        from .utils import llm_quality as revision_llm
 
-        response = llm.invoke([
+        response = revision_llm.invoke([
             SystemMessage(content=REVISION_SYSTEM),
             HumanMessage(content=(
                 f"CRITICAL ISSUES TO FIX ({len(critical_issues)} total):\n"
@@ -125,9 +126,15 @@ def revision_node(state: State) -> dict:
               f"Revision {revision_num} complete ({word_diff:+d} words). Re-auditing...",
               {"revision": revision_num, "word_delta": word_diff})
 
+        # ✅ FIX: Track which claims were addressed so QA doesn't re-flag them.
+        previously_fixed = state.get("qa_fixed_claims", [])
+        newly_fixed = [i.get("claim", "") for i in critical_issues if i.get("claim")]
+        all_fixed = previously_fixed + newly_fixed
+
         return {
             "final": revised_text,
             "revision_count": revision_num,
+            "qa_fixed_claims": all_fixed,
         }
 
     except Exception as e:

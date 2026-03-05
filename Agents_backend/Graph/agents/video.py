@@ -287,7 +287,7 @@ def video_generator_node(state: State) -> dict:
         return {"video_path": None}
 
     try:
-        from moviepy import AudioFileClip
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
         audio_clip     = AudioFileClip(audio_path)
         audio_duration = audio_clip.duration
     except Exception as e:
@@ -334,8 +334,11 @@ def video_generator_node(state: State) -> dict:
     logger.info("   ✂️ Editing video with moviepy...")
 
     try:
-        from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
-        import moviepy.video.fx as vfx
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        from moviepy.video.compositing.concatenate import concatenate_videoclips
+        from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+        from moviepy.video.fx.loop import Loop
     except ImportError:
         logger.error("moviepy not installed. Skipping video generation.")
         _emit(_job(state), "video", "error", "Missing moviepy dependency.")
@@ -362,7 +365,7 @@ def video_generator_node(state: State) -> dict:
             final_video = concatenate_videoclips(video_clips)
 
         if final_video.duration < audio_duration:
-            final_video = final_video.with_effects([vfx.Loop(duration=audio_duration)])
+            final_video = final_video.with_effects([Loop(duration=audio_duration)])
         else:
             final_video = final_video.subclipped(0, audio_duration)
 

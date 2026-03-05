@@ -195,7 +195,16 @@ YOUR MISSION: Write ONE COMPLETE section of a blog post with exceptional quality
 ❌ DO NOT make up case studies, research reports, or specific historical events.
 ✅ You MUST ONLY use specific facts, tools, stats, and quotes if they exist in the provided 'Available Evidence'.
 ✅ If the Evidence is sparse or does not contain specific stats/tools, DO NOT invent them to reach the word count. Instead, write comprehensively about the *concepts*, *implications*, *benefits*, and *general strategies* surrounding the topic.
-✅ If you mention a specific stat, paper, or feature from the Evidence, you MUST cite it inline using strict Markdown format: `[Exact Author/Title/Paper Name](Exact URL)`. DO NOT use vague publisher names like `[Arxiv](url)` or `[O'Reilly](url)`. Be specific.
+
+**MANDATORY INLINE CITATION FORMAT:**
+✅ Every fact, statistic, or claim drawn from the Available Evidence MUST include a clickable inline link.
+✅ Use this EXACT format — no exceptions:
+   - "According to [Source Title](https://exact-url.com), researchers found that..."
+   - "A recent report by [Organization Name](https://exact-url.com) highlights..."
+   - "[Author/Site Name](https://exact-url.com) recommends that busy professionals..."
+❌ DO NOT mention source names without embedding the URL as a Markdown link.
+❌ DO NOT use vague publisher names like `[Arxiv](url)` or `[O'Reilly](url)`. Be specific.
+✅ Aim for at least 1-2 inline citations per section from your assigned evidence.
 
 **CRITICAL INTER-SECTION UNIQUENESS RULES:**
 ❌ DO NOT repeat any statistic, named tool, product, or case study that is already covered

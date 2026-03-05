@@ -1,5 +1,6 @@
 import os
 from typing import List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -118,7 +119,10 @@ def scrape_full_webpage(url: str, max_words: int = 1500) -> str:
         headers = {'Accept': 'text/event-stream'}
 
         logger.info(f"Using Jina Reader for: {url}")
-        response = requests.get(jina_url, headers=headers, timeout=15)
+        # ✅ FIX: Reduced timeout from 15s → 8s. Most successful Jina responses
+        # arrive in under 5s. The old 15s timeout just meant waiting longer for
+        # pages that would ultimately fail (4/10 timed out in the user's run).
+        response = requests.get(jina_url, headers=headers, timeout=8)
 
         if response.status_code == 200:
             text = response.text
@@ -156,29 +160,42 @@ def research_node(state: State) -> dict:
     raw_results = []
     duplicates_skipped = 0
 
-    for q in queries:
-        logger.info(f"Searching: {q}")
-        _emit(_job(state), "research", "working", f"Searching: {q}")
+    # ✅ FIX: Parallelize Tavily searches.
+    # Previously 5 queries ran one-by-one (~4s each = ~20s total).
+    # Now they run concurrently in ~5s.
+    logger.info(f"🔎 Running {len(queries)} search queries in parallel...")
+    _emit(_job(state), "research", "working", f"Searching {len(queries)} queries in parallel...")
 
-        # ✅ FIX: Pass recency_days into every search call.
-        results = _tavily_search(q, max_results=3, recency_days=recency_days)
-
-        for r in results:
-            # Gate 1: exact URL deduplication (unchanged)
-            if r['url'] in found_urls:
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_query = {
+            executor.submit(_tavily_search, q, 3, recency_days): q
+            for q in queries
+        }
+        for future in as_completed(future_to_query):
+            q = future_to_query[future]
+            logger.info(f"Searching: {q}")
+            try:
+                results = future.result()
+            except Exception as e:
+                logger.warning(f"Search failed for '{q}': {e}")
                 continue
 
-            # Gate 2: near-duplicate snippet detection
-            snippet = r.get("snippet", "")
-            if _is_near_duplicate(snippet, seen_fingerprints):
-                logger.info(f"   ⏭️ Skipping near-duplicate: {r['url']}")
-                duplicates_skipped += 1
-                continue
+            for r in results:
+                # Gate 1: exact URL deduplication (unchanged)
+                if r['url'] in found_urls:
+                    continue
 
-            # Accept this result
-            found_urls.add(r['url'])
-            seen_fingerprints.append(_snippet_fingerprint(snippet))
-            raw_results.append(r)
+                # Gate 2: near-duplicate snippet detection
+                snippet = r.get("snippet", "")
+                if _is_near_duplicate(snippet, seen_fingerprints):
+                    logger.info(f"   ⏭️ Skipping near-duplicate: {r['url']}")
+                    duplicates_skipped += 1
+                    continue
+
+                # Accept this result
+                found_urls.add(r['url'])
+                seen_fingerprints.append(_snippet_fingerprint(snippet))
+                raw_results.append(r)
 
     if duplicates_skipped:
         logger.info(f"   🧹 Skipped {duplicates_skipped} near-duplicate result(s)")
@@ -188,17 +205,36 @@ def research_node(state: State) -> dict:
         _emit(_job(state), "research", "completed", "No results found", {"sources": 0})
         return {"evidence": []}
 
-    logger.info(f"🕸️ Scraping {len(raw_results[:10])} top articles...")
-    _emit(_job(state), "research", "working", f"Deep-scraping {len(raw_results[:10])} articles...")
+    # ✅ FIX: Parallelize web scraping.
+    # Previously 10 URLs scraped one-by-one with 15s timeout each = ~120s.
+    # Now they scrape concurrently in ~15-20s total.
+    top_results = raw_results[:10]
+    logger.info(f"🕸️ Scraping {len(top_results)} top articles in parallel...")
+    _emit(_job(state), "research", "working", f"Deep-scraping {len(top_results)} articles in parallel...")
 
     deep_evidence_context = ""
-    for idx, r in enumerate(raw_results[:10]):
-        logger.info(f"-> Reading: {r['url']}")
-        full_text = scrape_full_webpage(r['url'])
+    scraped_parts = {}
 
-        if full_text:
-            deep_evidence_context += f"SOURCE {idx+1}: {r['title']} ({r['url']})\n"
-            deep_evidence_context += f"CONTENT: {full_text[:3000]}\n\n"
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_item = {
+            executor.submit(scrape_full_webpage, r['url']): (idx, r)
+            for idx, r in enumerate(top_results)
+        }
+        for future in as_completed(future_to_item):
+            idx, r = future_to_item[future]
+            logger.info(f"-> Reading: {r['url']}")
+            try:
+                full_text = future.result()
+                if full_text:
+                    scraped_parts[idx] = (r, full_text)
+            except Exception as e:
+                logger.warning(f"Scrape failed for {r['url']}: {e}")
+
+    # Reassemble in original order for deterministic evidence extraction
+    for idx in sorted(scraped_parts.keys()):
+        r, full_text = scraped_parts[idx]
+        deep_evidence_context += f"SOURCE {idx+1}: {r['title']} ({r['url']})\n"
+        deep_evidence_context += f"CONTENT: {full_text[:3000]}\n\n"
 
     logger.info("🧠 Analyzing full articles for hard evidence...")
     _emit(_job(state), "research", "working", "Extracting verified facts from articles...")

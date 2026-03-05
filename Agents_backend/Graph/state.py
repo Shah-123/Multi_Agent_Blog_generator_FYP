@@ -140,6 +140,7 @@ class State(TypedDict, total=False):
 
     # --- Revision Loop ---
     revision_count: int       # How many QA → revision loops have run (starts 0, max 2)
+    qa_fixed_claims: List[str]  # Claims already addressed by revision — prevents QA re-flagging
 
     # --- Blog Evaluator ---
     blog_evaluator_report: str   # Human-readable report with scores and feedback

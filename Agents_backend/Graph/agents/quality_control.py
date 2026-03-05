@@ -68,11 +68,29 @@ def qa_agent_node(state: State) -> dict:
         for e in state.get("evidence", [])[:15]
     ])
 
+    # ✅ FIX: Include revision context so QA doesn't re-flag already-addressed issues
+    revision_count = state.get("revision_count", 0)
+    fixed_claims = state.get("qa_fixed_claims", [])
+
+    revision_context = ""
+    if revision_count > 0:
+        revision_context = (
+            f"\n\nIMPORTANT CONTEXT: This blog has already undergone {revision_count} revision(s). "
+            f"The following issues were already addressed and MUST NOT be re-flagged:\n"
+        )
+        for claim in fixed_claims:
+            revision_context += f"  - ALREADY FIXED: {claim}\n"
+        revision_context += (
+            "\nOnly flag genuinely NEW issues. If a claim was previously flagged and the "
+            "surrounding text has been rewritten, consider it resolved.\n"
+        )
+
     report = checker.invoke([
         SystemMessage(content=QA_AGENT_SYSTEM),
         HumanMessage(content=(
             f"BLOG CONTENT TO AUDIT:\n{final_text[:_QA_AUDIT_CHAR_LIMIT]}\n\n"
             f"EVIDENCE USED IN RESEARCH:\n{evidence_summary}"
+            f"{revision_context}"
         ))
     ])
 

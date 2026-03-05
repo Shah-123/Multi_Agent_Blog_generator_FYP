@@ -141,5 +141,6 @@ huggingface-hub
 python-multipart==0.0.6
 aiofiles==23.2.1
 moviepy
+imageio-ffmpeg
 pytest>=8.0
 pytest-asyncio>=0.23
