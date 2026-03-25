@@ -253,14 +253,23 @@ def save_blog_content(folders: dict, state: State) -> dict:
     if state.get("podcast_audio_path") and os.path.exists(state["podcast_audio_path"]):
         import shutil
         dest = f"{folders['audio']}/podcast.wav"
-        shutil.copy(state["podcast_audio_path"], dest)
+        try:
+            if not os.path.samefile(state["podcast_audio_path"], dest):
+                shutil.copy(state["podcast_audio_path"], dest)
+        except (OSError, ValueError):
+            shutil.copy(state["podcast_audio_path"], dest)
         saved["podcast"] = dest
 
     # 5. Video
     if state.get("video_path") and os.path.exists(state["video_path"]):
         import shutil
         dest = f"{folders['video']}/short.mp4"
-        shutil.copy(state["video_path"], dest)
+        try:
+            if not os.path.samefile(state["video_path"], dest):
+                shutil.copy(state["video_path"], dest)
+        except (OSError, ValueError):
+            # samefile can raise if one path doesn't exist yet
+            shutil.copy(state["video_path"], dest)
         saved["video"] = dest
 
     # 6. Research Evidence
@@ -572,16 +581,18 @@ def run_app(
     # 5. Number of sections
     # -----------------------------------------------------------------------
     if not api_mode:
-        sections_input = input("\n📏 How many body sections? (1-10) [default: 5]: ").strip()
+        sections_input = input("\n📏 How many body sections? (1-10, plus intro & closing are added automatically) [default: 3]: ").strip()
         try:
-            target_sections = max(1, min(10, int(sections_input))) if sections_input else 5
+            target_sections = max(1, min(10, int(sections_input))) if sections_input else 3
         except ValueError:
-            target_sections = 5
+            target_sections = 3
     else:
-        target_sections = max(1, min(10, sections)) if sections else 5
+        target_sections = max(1, min(10, sections)) if sections else 3
 
+    from Graph.agents.orchestrator import TOTAL_FIXED_SECTIONS
+    total_sections = target_sections + TOTAL_FIXED_SECTIONS
     print(f"\n✅ Tone: {target_tone}")
-    print(f"✅ Sections: {target_sections}")
+    print(f"✅ Sections: {target_sections} body + {TOTAL_FIXED_SECTIONS} fixed (intro/closing) = {total_sections} total")
     print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Video={'ON' if generate_video else 'OFF'} | Podcast={'ON' if generate_podcast else 'OFF'}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
 

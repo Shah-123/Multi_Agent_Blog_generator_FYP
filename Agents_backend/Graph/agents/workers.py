@@ -242,4 +242,4 @@ def merge_content(state: State) -> dict:
           f"All {len(ordered_content)} sections written",
           {"sections": len(ordered_content), "words": word_count})
 
-    return {"merged_md": merged_md}
+    return {"merged_md": merged_md, "final": merged_md}
