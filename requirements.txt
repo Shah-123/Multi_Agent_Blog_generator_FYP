@@ -144,3 +144,6 @@ moviepy
 imageio-ffmpeg
 pytest>=8.0
 pytest-asyncio>=0.23
+markdown>=3.5
+python-docx>=1.0
+weasyprint>=60.0
