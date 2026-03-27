@@ -168,7 +168,7 @@ def research_node(state: State) -> dict:
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         future_to_query = {
-            executor.submit(_tavily_search, q, 3, recency_days): q
+            executor.submit(_tavily_search, q, 5, recency_days): q
             for q in queries
         }
         for future in as_completed(future_to_query):
@@ -208,7 +208,7 @@ def research_node(state: State) -> dict:
     # ✅ FIX: Parallelize web scraping.
     # Previously 10 URLs scraped one-by-one with 15s timeout each = ~120s.
     # Now they scrape concurrently in ~15-20s total.
-    top_results = raw_results[:10]
+    top_results = raw_results[:15]
     logger.info(f"🕸️ Scraping {len(top_results)} top articles in parallel...")
     _emit(_job(state), "research", "working", f"Deep-scraping {len(top_results)} articles in parallel...")
 
@@ -244,7 +244,8 @@ def research_node(state: State) -> dict:
         SystemMessage(content=RESEARCH_SYSTEM),
         HumanMessage(content=(
             f"Topic: {state['topic']}\n"
-            f"Read the following full articles and extract ONLY hard facts, statistics, and verifiable claims.\n\n"
+            f"Read the following full articles and extract 8–10 UNIQUE hard facts, statistics, and verifiable claims.\n"
+            f"Ensure evidence comes from DIVERSE sources — do not extract multiple items from the same article unless they contain genuinely distinct facts.\n\n"
             f"SCRAPED ARTICLES:\n{deep_evidence_context}"
         )),
     ])

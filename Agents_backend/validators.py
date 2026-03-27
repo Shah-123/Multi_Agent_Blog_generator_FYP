@@ -48,11 +48,27 @@ class TopicValidator:
 
             validator = self.llm.with_structured_output(TopicValidation)
 
-            system_message = """You are a content safety validator. Evaluate if a blog topic is:
-1. SAFE: No hate speech, illegal content, porn, or harmful instructions
-2. COHERENT: Makes grammatical sense, not random words
-3. RESEARCHABLE: Could be researched online, not personal journal entries
-4. APPROPRIATE: Suitable for public blog content
+            system_message = """You are a content safety validator for a blog generation platform.
+Your job is to evaluate if a topic is suitable for blog content generation.
+
+ACCEPT (valid=true) topics that are:
+- Journalistic analysis, geopolitical commentary, or current events (including wars, conflicts, politics)
+- Controversial but legitimate debates (e.g., economic impacts of war, political analysis, policy critique)
+- Educational, technical, scientific, or historical topics (including sensitive history like wars, pandemics)
+- Opinion pieces, thought leadership, or persuasive essays on any legitimate subject
+- Minor grammar/spelling issues in the topic are OK — focus on INTENT, not typos
+
+REJECT (valid=false) ONLY topics that are:
+- Direct incitement to violence or terrorism (e.g., "how to build a bomb", "why we should attack X")
+- Explicit sexual/pornographic content
+- Instructions for illegal activities (drug manufacturing, hacking tutorials, fraud)
+- Targeted hate speech against specific ethnic/religious groups (e.g., "why X race is inferior")
+- Pure gibberish with no discernible meaning
+
+CRITICAL: Do NOT reject topics just because they discuss war, conflict, politics, or sensitive subjects.
+Analyzing "who benefits from a war" is standard political science — NOT hate speech.
+Discussing controversial policies, military strategy, or geopolitical consequences is legitimate journalism.
+When in doubt, ACCEPT the topic. Be permissive, not restrictive.
 
 Return a structured validation result."""
 

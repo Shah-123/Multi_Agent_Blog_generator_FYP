@@ -167,3 +167,6 @@ class State(TypedDict, total=False):
     generate_campaign: bool
     generate_video: bool
     generate_podcast: bool
+
+    # --- Export Formats ---
+    export_formats: List[str]  # e.g., ["html", "pdf", "docx"]

@@ -24,22 +24,24 @@ REVISION_SYSTEM = """You are a surgical content editor. Your job is to fix SPECI
 issues flagged by a quality audit — nothing else.
 
 RULES:
-1. You will receive the FULL blog post and a list of CRITICAL issues.
-2. For each issue:
-   - If the claim is a fabricated/hallucinated statistic → REMOVE the sentence entirely 
-     and rewrite the surrounding paragraph to flow naturally without it.
-   - If the claim is a factual error with a known correction → FIX it using only the 
-     evidence provided (do NOT invent a replacement stat).
+1. You will receive the FULL blog post, a list of CRITICAL issues, and the ORIGINAL EVIDENCE.
+2. For each flagged issue:
+   - FIRST, search the AVAILABLE EVIDENCE for a real fact that can replace the bad claim.
+   - If you find matching evidence → REWRITE the sentence using that evidence with a proper
+     inline citation in the format: [Source Title](URL).
+   - If NO evidence supports the claim → REMOVE the sentence entirely and smooth the 
+     surrounding paragraph so it flows naturally.
    - If the claim references a non-existent study/tool/company → REMOVE the reference 
-     and replace with a general statement about the concept.
-3. DO NOT change any other part of the blog.
+     and replace with a general, defensible statement about the concept.
+3. DO NOT change any part of the blog that is NOT flagged.
 4. DO NOT add new sections, headings, or paragraphs.
 5. DO NOT change the tone, style, or structure.
-6. Preserve all Markdown formatting exactly (##, **, [], images, mermaid diagrams).
-7. Return the COMPLETE blog post with your targeted fixes applied.
+6. DO NOT invent replacement statistics or facts — ONLY use what is in the evidence.
+7. Preserve all Markdown formatting exactly (##, **, [], images, mermaid diagrams).
+8. Return the COMPLETE blog post with your targeted fixes applied.
 
-Think of yourself as a copy editor with a red pen — you cross out the bad sentences 
-and smooth over the gaps. You do NOT rewrite good content."""
+Think of yourself as a fact-checker with the original research in hand. For every flagged 
+claim, either cite a real source or remove the claim entirely. Never guess."""
 
 
 def revision_node(state: State) -> dict:
@@ -76,11 +78,11 @@ def revision_node(state: State) -> dict:
         for idx, issue in enumerate(critical_issues, 1)
     )
 
-    # Build evidence context so the LLM has real facts to use as replacements
+    # Build evidence context — full snippets so the revision agent can find real facts
     evidence_text = "\n".join(
-        f"- [{e.title}]({e.url}): {e.snippet[:200]}..."
-        for e in evidence[:10]
-    ) if evidence else "No external evidence available."
+        f"- [{e.title}]({e.url}): {e.snippet[:500]}"
+        for e in evidence
+    ) if evidence else "No external evidence available — remove any unsupported claims."
 
     logger.info(f"   🔧 Fixing {len(critical_issues)} critical issue(s)...")
     _emit(job_id, "revision", "working",
@@ -91,12 +93,15 @@ def revision_node(state: State) -> dict:
         # Also avoids hardcoding the model name — it follows LLM_QUALITY_MODEL env var.
         from .utils import llm_quality as revision_llm
 
+        topic = state.get("topic", "Unknown")
+
         response = revision_llm.invoke([
             SystemMessage(content=REVISION_SYSTEM),
             HumanMessage(content=(
+                f"BLOG TOPIC: {topic}\n\n"
                 f"CRITICAL ISSUES TO FIX ({len(critical_issues)} total):\n"
                 f"{issues_text}\n\n"
-                f"AVAILABLE EVIDENCE (use for corrections if applicable):\n"
+                f"ORIGINAL EVIDENCE (use these for corrections — cite with [Title](URL)):\n"
                 f"{evidence_text}\n\n"
                 f"FULL BLOG POST TO EDIT:\n"
                 f"{final_text}"

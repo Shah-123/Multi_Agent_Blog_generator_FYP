@@ -39,6 +39,7 @@ from Graph.nodes import (
 from Graph.agents.revision import MAX_REVISIONS
 from Graph.keyword_optimizer import keyword_optimizer_node
 from Graph.completion_validator import validate_completion
+from Graph.export_manager import export_all
 from validators import TopicValidator, blog_evaluator_node
 
 import logging
@@ -211,6 +212,17 @@ def save_blog_content(folders: dict, state: State) -> dict:
         Path(path).write_text(blog_content, encoding="utf-8")
         saved["blog"] = path
         print(f"   ✅ Saved blog: {os.path.basename(path)}")
+
+        # Export to additional formats (HTML, PDF, DOCX)
+        requested_formats = state.get("export_formats", [])
+        if requested_formats:
+            blog_title = plan.blog_title if plan else "blog"
+            base_export_path = f"{folders['content']}/{slug}"
+            export_results = export_all(blog_content, base_export_path, blog_title, requested_formats)
+            for fmt, fmt_path in export_results.items():
+                if fmt_path:
+                    saved[f"blog_{fmt}"] = fmt_path
+                    print(f"   ✅ Exported {fmt.upper()}: {os.path.basename(fmt_path)}")
 
     # 2. Campaign Assets
     platform_map = {
@@ -576,9 +588,30 @@ def run_app(
         generate_campaign = include_campaign
         generate_video    = include_video
         generate_podcast  = include_podcast
+        export_formats    = ["html"]  # API mode: always export HTML for frontend
 
     # -----------------------------------------------------------------------
-    # 5. Number of sections
+    # 5. Export format selection
+    # -----------------------------------------------------------------------
+    if not api_mode:
+        print("\n📦 Export Formats (blog will always be saved as Markdown):")
+        print("1. Markdown only")
+        print("2. Markdown + HTML")
+        print("3. Markdown + HTML + PDF")
+        print("4. Markdown + HTML + DOCX")
+        print("5. All formats (MD + HTML + PDF + DOCX)")
+        export_choice = input("Choose (1-5) [default: 2]: ").strip() or "2"
+        export_map = {
+            "1": [],
+            "2": ["html"],
+            "3": ["html", "pdf"],
+            "4": ["html", "docx"],
+            "5": ["html", "pdf", "docx"],
+        }
+        export_formats = export_map.get(export_choice, ["html"])
+
+    # -----------------------------------------------------------------------
+    # 6. Number of sections
     # -----------------------------------------------------------------------
     if not api_mode:
         sections_input = input("\n📏 How many body sections? (1-10, plus intro & closing are added automatically) [default: 3]: ").strip()
@@ -593,7 +626,9 @@ def run_app(
     total_sections = target_sections + TOTAL_FIXED_SECTIONS
     print(f"\n✅ Tone: {target_tone}")
     print(f"✅ Sections: {target_sections} body + {TOTAL_FIXED_SECTIONS} fixed (intro/closing) = {total_sections} total")
+    export_labels = ['MD'] + [f.upper() for f in export_formats] if export_formats else ['MD']
     print(f"✅ Options: Images={'ON' if generate_images else 'OFF'} | Campaign={'ON' if generate_campaign else 'OFF'} | Video={'ON' if generate_video else 'OFF'} | Podcast={'ON' if generate_podcast else 'OFF'}")
+    print(f"✅ Export Formats: {' + '.join(export_labels)}")
     print(f"✅ Keywords: {', '.join(target_keywords) if target_keywords else 'None specified'}")
 
     # -----------------------------------------------------------------------
@@ -621,6 +656,7 @@ def run_app(
         "generate_campaign": generate_campaign,
         "generate_video":    generate_video,
         "generate_podcast":  generate_podcast,
+        "export_formats":    export_formats,
         "_job_id":           job_id or "",
     }
 
